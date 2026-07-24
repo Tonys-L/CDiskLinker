@@ -2,21 +2,23 @@
   <div v-if="store.crashRecoveryMsg" class="journal-bar">
     <div class="journal-icon">⚠️</div>
     <div class="journal-content">
-      <span class="journal-title">上次运行异常中断</span>
+      <span class="journal-title">{{ t('journal.title') }}</span>
       <span class="journal-detail">{{ store.crashRecoveryMsg }}</span>
     </div>
     <n-button size="small" type="warning" @click="store.rollbackJournal()">
-      回滚恢复
+      {{ t('journal.rollback') }}
     </n-button>
     <n-button size="small" quaternary @click="store.crashRecoveryMsg = ''">
-      关闭
+      {{ t('common.close') }}
     </n-button>
   </div>
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { useAppStore } from '../stores/app'
 
+const { t } = useI18n()
 const store = useAppStore()
 </script>
 

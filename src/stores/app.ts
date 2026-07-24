@@ -30,6 +30,11 @@ export interface DiskInfo {
 export interface LogEntry {
   timestamp: string
   level: 'info' | 'warn' | 'error' | 'success'
+  // i18n key：命中时由 LogConsole 渲染时翻译为当前语言
+  i18nKey?: string
+  // i18n 插值参数
+  params?: Record<string, unknown>
+  // 原始消息：i18n key 未命中或无 key 时的回退显示（也用于后端透传 detail）
   message: string
 }
 
@@ -114,7 +119,7 @@ export const useAppStore = defineStore('app', () => {
     try {
       await invoke('elevate_self')
     } catch (e) {
-      addLog('error', `提权失败: ${e}`)
+      addLog('error', `提权失败: ${e}`, 'log.elevateFailed', { error: String(e) })
     }
   }
 
@@ -122,7 +127,7 @@ export const useAppStore = defineStore('app', () => {
     try {
       diskInfo.value = await invoke<DiskInfo>('get_disk_info', { drive: 'C' })
     } catch (e) {
-      addLog('error', `获取磁盘信息失败: ${e}`)
+      addLog('error', `获取磁盘信息失败: ${e}`, 'log.diskInfoFailed', { error: String(e) })
     }
   }
 
@@ -131,12 +136,12 @@ export const useAppStore = defineStore('app', () => {
     try {
       migrationStatus.value = 'Scanning'
       scanDetail.value = '正在扫描C盘根目录...'
-      addLog('info', '开始扫描C盘...')
+      addLog('info', '开始扫描C盘...', 'log.scanStart')
       // 异步调用，结果通过事件返回
       await invoke('scan_disk')
     } catch (e) {
       migrationStatus.value = 'Idle'
-      addLog('error', `扫描失败: ${e}`)
+      addLog('error', `扫描失败: ${e}`, 'log.scanFailed', { error: String(e) })
     }
   }
 
@@ -162,7 +167,7 @@ export const useAppStore = defineStore('app', () => {
         level: node.level + 1,
         parentId: node.id,
       }).catch((e) => {
-        addLog('error', `展开目录失败: ${e}`)
+        addLog('error', `展开目录失败: ${e}`, 'log.expandFailed', { error: String(e) })
         node.is_expanded = false
       })
     }
@@ -204,7 +209,7 @@ export const useAppStore = defineStore('app', () => {
     }
 
     if (paths.length === 0) {
-      addLog('error', '没有选择任何源目录')
+      addLog('error', '没有选择任何源目录', 'log.noSourceSelected')
       return
     }
 
@@ -230,11 +235,11 @@ export const useAppStore = defineStore('app', () => {
         lockedPaths = locked
         lockingProcesses.value = allLocks
         showLockDialog.value = true
-        addLog('warn', `检测到 ${allLocks.length} 个进程占用源目录，等待用户处理`)
+        addLog('warn', `检测到 ${allLocks.length} 个进程占用源目录，等待用户处理`, 'log.lockDetected', { count: allLocks.length })
         return
       }
     } catch (e) {
-      addLog('warn', `文件占用检测不可用（可能权限不足），跳过检测继续迁移`)
+      addLog('warn', `文件占用检测不可用（可能权限不足），跳过检测继续迁移`, 'log.lockCheckUnavailable')
     }
 
     await _proceedMigrationAfterLockCheck(paths)
@@ -250,7 +255,7 @@ export const useAppStore = defineStore('app', () => {
       })
     } catch (e) {
       migrationStatus.value = 'Idle'
-      addLog('error', `迁移失败: ${e}`)
+      addLog('error', `迁移失败: ${e}`, 'log.migrateFailed', { error: String(e) })
     }
   }
 
@@ -262,10 +267,10 @@ export const useAppStore = defineStore('app', () => {
       try {
         await invoke('kill_locking_processes', { path: p })
       } catch (e) {
-        addLog('error', `关闭占用进程失败 [${p}]: ${e}`)
+        addLog('error', `关闭占用进程失败 [${p}]: ${e}`, 'log.killLockFailed', { path: p, error: String(e) })
       }
     }
-    addLog('info', '已尝试关闭所有占用进程，继续迁移')
+    addLog('info', '已尝试关闭所有占用进程，继续迁移', 'log.lockKilled')
     lockingProcesses.value = []
     lockedPaths = []
     const paths = pendingMigrationPaths
@@ -284,7 +289,7 @@ export const useAppStore = defineStore('app', () => {
     lockedPaths = []
     pendingMigrationPaths = []
     migrationStatus.value = 'Idle'
-    addLog('warn', '用户取消迁移（存在文件占用）')
+    addLog('warn', '用户取消迁移（存在文件占用）', 'log.userCancelLock')
   }
 
   async function checkCrashRecovery() {
@@ -292,10 +297,11 @@ export const useAppStore = defineStore('app', () => {
       const result = await invoke<{ found: boolean; message: string }>('check_crash_recovery')
       if (result.found) {
         crashRecoveryMsg.value = result.message
+        // 后端返回的 message 为动态内容，直接透传
         addLog('warn', result.message)
       }
     } catch (e) {
-      addLog('error', `崩溃恢复检查失败: ${e}`)
+      addLog('error', `崩溃恢复检查失败: ${e}`, 'log.crashCheckFailed', { error: String(e) })
     }
   }
 
@@ -304,17 +310,23 @@ export const useAppStore = defineStore('app', () => {
       migrationStatus.value = 'RollingBack'
       const msg = await invoke<string>('rollback_journal')
       migrationStatus.value = 'Idle'
+      // 后端返回的回滚结果消息，直接透传
       addLog('success', msg)
     } catch (e) {
       migrationStatus.value = 'Idle'
-      addLog('error', `回滚失败: ${e}`)
+      addLog('error', `回滚失败: ${e}`, 'log.rollbackFailed', { error: String(e) })
     }
   }
 
-  function addLog(level: LogEntry['level'], message: string) {
+  function addLog(
+    level: LogEntry['level'],
+    message: string,
+    i18nKey?: string,
+    params?: Record<string, unknown>,
+  ) {
     const now = new Date()
     const timestamp = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`
-    logs.value.push({ timestamp, level, message })
+    logs.value.push({ timestamp, level, message, i18nKey, params })
     if (logs.value.length > 500) {
       logs.value = logs.value.slice(-400)
     }
@@ -334,7 +346,8 @@ export const useAppStore = defineStore('app', () => {
       treeNodes.value = data.nodes || []
       migrationStatus.value = 'Idle'
       scanDetail.value = ''
-      addLog('success', `扫描完成，发现 ${data.count || treeNodes.value.length} 个目录`)
+      const foundCount = data.count || treeNodes.value.length
+      addLog('success', `扫描完成，发现 ${foundCount} 个目录`, 'log.scanDone', { count: foundCount })
     })
 
     // 子目录扫描结果
@@ -431,11 +444,16 @@ export const useAppStore = defineStore('app', () => {
       if (data.status === 'Failed') {
         migrationStatus.value = 'Idle'
         migrationPercent.value = 0
-        addLog('error', data.detail || '迁移失败')
+        // 后端 detail 为动态内容，优先透传；无 detail 时用 i18n
+        if (data.detail) {
+          addLog('error', data.detail)
+        } else {
+          addLog('error', '迁移失败', 'log.migrateFailedShort')
+        }
       } else {
         migrationStatus.value = 'Idle'
         migrationPercent.value = 0
-        addLog('success', '全部迁移完成！')
+        addLog('success', '全部迁移完成！', 'log.migrateAllDone')
         refreshDiskInfo()
       }
     })
@@ -443,7 +461,7 @@ export const useAppStore = defineStore('app', () => {
     // 迁移单项错误
     await listen('migration-error', (event: any) => {
       const data = event.payload as any
-      addLog('error', `迁移失败 [${data.path}]: ${data.error}`)
+      addLog('error', `迁移失败 [${data.path}]: ${data.error}`, 'log.migrateItemFailed', { path: data.path, error: String(data.error) })
     })
   }
 

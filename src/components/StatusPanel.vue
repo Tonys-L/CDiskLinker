@@ -1,15 +1,15 @@
 <template>
   <div class="status-panel">
     <div class="status-header">
-      <span class="status-title">迁移操作</span>
+      <span class="status-title">{{ t('migration.title') }}</span>
     </div>
     <div class="status-body">
       <!-- 手动源路径输入 -->
       <div class="source-input-section">
-        <div class="input-label">源目录路径（可手动输入）</div>
+        <div class="input-label">{{ t('migration.sourceLabel') }}</div>
         <n-input
           v-model:value="store.manualSourcePath"
-          placeholder="例如 C:\Users\你的用户名\Documents\大文件夹"
+          :placeholder="t('source.placeholder')"
           size="small"
           clearable
         />
@@ -18,11 +18,11 @@
       <!-- 已选目录摘要 -->
       <div v-if="store.selectedNodes.length > 0" class="selection-summary">
         <div class="summary-row">
-          <span>树中已选</span>
-          <span class="summary-value">{{ store.selectedNodes.length }} 个目录</span>
+          <span>{{ t('source.title') }}</span>
+          <span class="summary-value">{{ t('migration.selectedCount', { count: store.selectedNodes.length }) }}</span>
         </div>
         <div class="summary-row">
-          <span>可释放空间</span>
+          <span>{{ t('migration.canFree') }}</span>
           <span class="summary-value highlight">{{ formatSize(store.totalSelectedSize) }}</span>
         </div>
       </div>
@@ -30,8 +30,8 @@
       <!-- 当前迁移目标 -->
       <div class="target-summary">
         <div class="summary-row">
-          <span>目标路径</span>
-          <span class="summary-value">{{ store.targetPath || '未设置' }}</span>
+          <span>{{ t('target.path') }}</span>
+          <span class="summary-value">{{ store.targetPath || t('target.notSet') }}</span>
         </div>
       </div>
 
@@ -40,7 +40,7 @@
         <div class="progress-header">
           <span class="progress-stage">{{ stageLabel }}</span>
           <span v-if="store.migrationTotalItems > 1" class="progress-items">
-            项目 {{ store.migrationCurrentItem }} / {{ store.migrationTotalItems }}
+            {{ t('migration.items', { current: store.migrationCurrentItem, total: store.migrationTotalItems }) }}
           </span>
         </div>
         <n-progress
@@ -55,14 +55,14 @@
         <div v-if="store.migrationDetail" class="progress-detail">{{ store.migrationDetail }}</div>
         <div v-if="store.migrationTotalFiles > 0" class="progress-stats">
           <span class="stat-item">
-            文件: {{ store.migrationCopiedFiles }} / {{ store.migrationTotalFiles }}
+            {{ t('migration.files', { copied: store.migrationCopiedFiles, total: store.migrationTotalFiles }) }}
           </span>
           <span class="stat-item">
-            大小: {{ formatSize(store.migrationCopiedSize) }} / {{ formatSize(store.migrationTotalSize) }}
+            {{ t('migration.size', { copied: formatSize(store.migrationCopiedSize), total: formatSize(store.migrationTotalSize) }) }}
           </span>
         </div>
         <div v-if="store.migrationCurrentFile" class="progress-current-file" :title="store.migrationCurrentFile">
-          当前: {{ store.migrationCurrentFile }}
+          {{ t('migration.current', { file: store.migrationCurrentFile }) }}
         </div>
       </div>
 
@@ -75,7 +75,7 @@
           @click="store.startMigration()"
           block
         >
-          {{ store.migrationStatus === 'Copying' ? '迁移中...' : '开始迁移' }}
+          {{ store.migrationStatus === 'Copying' ? t('migration.migrating') : t('migration.start') }}
         </n-button>
       </div>
     </div>
@@ -84,25 +84,25 @@
     <n-modal
       :show="store.showLockDialog"
       preset="card"
-      title="检测到文件占用"
+      :title="t('migration.lockTitle')"
       style="width: 480px; max-width: 90vw;"
       :mask-closable="false"
       :close-on-esc="false"
     >
       <div class="lock-dialog-body">
-        <p class="lock-tip">以下进程正在占用待迁移的源目录，需关闭后才能继续迁移：</p>
+        <p class="lock-tip">{{ t('migration.lockTip') }}</p>
         <div class="lock-list">
           <div v-for="p in store.lockingProcesses" :key="p.pid" class="lock-item">
             <span class="lock-name">{{ p.name }}</span>
-            <span class="lock-pid">PID: {{ p.pid }}</span>
+            <span class="lock-pid">{{ t('migration.lockPid', { pid: p.pid }) }}</span>
           </div>
-          <div v-if="store.lockingProcesses.length === 0" class="lock-empty">未检测到占用进程</div>
+          <div v-if="store.lockingProcesses.length === 0" class="lock-empty">{{ t('migration.lockEmpty') }}</div>
         </div>
       </div>
       <template #footer>
         <div class="lock-dialog-footer">
-          <n-button @click="store.cancelMigrationDueToLocks()">取消迁移</n-button>
-          <n-button type="error" @click="store.killLockingProcessesAndContinue()">关闭进程继续</n-button>
+          <n-button @click="store.cancelMigrationDueToLocks()">{{ t('migration.cancelLock') }}</n-button>
+          <n-button type="error" @click="store.killLockingProcessesAndContinue()">{{ t('migration.killLock') }}</n-button>
         </div>
       </template>
     </n-modal>
@@ -111,8 +111,10 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useAppStore } from '../stores/app'
 
+const { t } = useI18n()
 const store = useAppStore()
 
 const canStartMigration = computed(() => {
@@ -121,28 +123,29 @@ const canStartMigration = computed(() => {
   return hasSource && hasTarget && store.migrationStatus === 'Idle'
 })
 
-// 后端 stage -> 中文标签
-const STAGE_LABELS: Record<string, string> = {
-  Starting: '开始',
-  PreScanning: '预统计',
-  PreScanned: '统计完成',
-  Copying: '复制中',
-  Verifying: '校验中',
-  Deleting: '删除源目录',
-  Renaming: '重命名',
-  Linking: '创建链接',
-  Done: '完成',
-  RollingBack: '回滚中',
-  Idle: '待机',
+// 后端 stage -> i18n key 映射
+const STAGE_I18N_KEYS: Record<string, string> = {
+  Starting: 'migration.stages.Starting',
+  PreScanning: 'migration.stages.PreScanning',
+  PreScanned: 'migration.stages.PreScanned',
+  Copying: 'migration.stages.Copying',
+  Verifying: 'migration.stages.Verifying',
+  Deleting: 'migration.stages.Deleting',
+  Renaming: 'migration.stages.Renaming',
+  Linking: 'migration.stages.Linking',
+  Done: 'migration.stages.Done',
+  RollingBack: 'migration.stages.RollingBack',
+  Idle: 'migration.stages.Idle',
 }
 
 const stageLabel = computed(() => {
   const s = store.migrationStage
   if (!s) {
     // 没有 stage 时退化为旧状态文案
-    return store.migrationStatus === 'RollingBack' ? '回滚中' : '迁移中'
+    return store.migrationStatus === 'RollingBack' ? t('migration.fallbackRollback') : t('migration.fallbackMigrating')
   }
-  return STAGE_LABELS[s] || s
+  const key = STAGE_I18N_KEYS[s]
+  return key ? t(key) : s
 })
 
 function formatSize(bytes: number): string {
@@ -151,7 +154,7 @@ function formatSize(bytes: number): string {
   } else if (bytes >= 1024 * 1024) {
     return (bytes / (1024 * 1024)).toFixed(2) + ' MB'
   } else if (bytes >= 1024) {
-    return (bytes / 1024).toFixed(2) + ' KB'
+    return (bytes / (1024)).toFixed(2) + ' KB'
   }
   return bytes + ' Bytes'
 }

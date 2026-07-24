@@ -1,5 +1,16 @@
 <template>
   <div class="app-root">
+    <!-- 语言切换按钮 -->
+    <n-button
+      class="lang-toggle"
+      size="small"
+      secondary
+      @click="toggleLocale"
+      :title="locale === 'zh-CN' ? t('lang.en') : t('lang.zh')"
+    >
+      {{ t('lang.switch') }}
+    </n-button>
+
     <!-- 左侧：目录树 -->
     <aside class="left-panel">
       <TreeView />
@@ -17,43 +28,43 @@
         <!-- 源目录 -->
         <section class="panel-section">
           <div class="section-title">
-            <span class="section-icon">📂</span> 源目录
+            <span class="section-icon">📂</span> {{ t('source.title') }}
           </div>
           <div class="section-body">
             <n-input
               v-model:value="store.manualSourcePath"
-              placeholder="手动输入源目录路径，如 C:\Users\用户\Documents\大文件夹"
+              :placeholder="t('source.placeholder')"
               size="small"
               clearable
             />
             <div v-if="store.selectedNodes.length > 0" class="source-summary">
-              <span>树中已选 <strong>{{ store.selectedNodes.length }}</strong> 个目录</span>
+              <span>{{ t('source.selectedPrefix') }}<strong>{{ store.selectedNodes.length }}</strong>{{ t('source.selectedSuffix') }}</span>
               <span class="sep">·</span>
-              <span class="highlight">可释放 {{ formatSize(store.totalSelectedSize) }}</span>
+              <span class="highlight">{{ t('source.canFree', { size: formatSize(store.totalSelectedSize) }) }}</span>
             </div>
-            <div v-else class="source-hint">在左侧目录树中勾选，或手动输入路径</div>
+            <div v-else class="source-hint">{{ t('source.hint') }}</div>
           </div>
         </section>
 
         <!-- 迁移目标 -->
         <section class="panel-section">
           <div class="section-title">
-            <span class="section-icon">📥</span> 迁移目标
+            <span class="section-icon">📥</span> {{ t('target.title') }}
           </div>
           <div class="section-body">
             <div class="target-input-row">
               <n-input
                 v-model:value="store.targetPath"
-                placeholder="输入目标路径，如 D:\CDiskLinker_Moved"
+                :placeholder="t('target.placeholder')"
                 size="small"
                 clearable
               />
               <n-button size="small" @click="browseFolder">
-                浏览
+                {{ t('common.browse') }}
               </n-button>
             </div>
             <div v-if="targetInfo" class="target-info">
-              目标盘可用: <strong class="highlight">{{ targetInfo.free }}</strong> / {{ targetInfo.total }}
+              <span>{{ t('target.freePrefix') }}<strong class="highlight">{{ targetInfo.free }}</strong>{{ t('target.freeSuffix', { total: targetInfo.total }) }}</span>
             </div>
           </div>
         </section>
@@ -80,10 +91,10 @@
             block
             size="large"
           >
-            {{ store.migrationStatus === 'Copying' ? '迁移中...' : '开始迁移' }}
+            {{ store.migrationStatus === 'Copying' ? t('migration.migrating') : t('migration.start') }}
           </n-button>
           <div class="migration-hint">
-            将源目录物理移至目标路径下，并在原位置建立联接(Junction)
+            {{ t('migration.hint') }}
           </div>
         </section>
 
@@ -102,15 +113,18 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { useAppStore } from '../stores/app'
+import { toggleLocale } from '../i18n'
 import DiskOverview from '../components/DiskOverview.vue'
 import TreeView from '../components/TreeView.vue'
 import JournalBar from '../components/JournalBar.vue'
 import LogConsole from '../components/LogConsole.vue'
 import WarningDialog from '../components/WarningDialog.vue'
 
+const { t, locale } = useI18n()
 const store = useAppStore()
 const targetInfo = ref<{ total: string; free: string } | null>(null)
 
@@ -123,7 +137,7 @@ const canMigrate = computed(() => {
 function formatSize(bytes: number): string {
   if (bytes >= 1024 * 1024 * 1024) return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB'
   if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB'
-  if (bytes >= 1024) return (bytes / 1024).toFixed(2) + ' KB'
+  if (bytes >= 1024) return (bytes / (1024)).toFixed(2) + ' KB'
   return bytes + ' Bytes'
 }
 
@@ -132,7 +146,7 @@ async function browseFolder() {
     const selected = await open({
       directory: true,
       multiple: false,
-      title: '选择迁移目标文件夹',
+      title: t('target.selectFolder'),
     })
     if (selected && typeof selected === 'string') {
       store.targetPath = selected
@@ -170,6 +184,22 @@ onMounted(async () => {
   height: 100vh;
   overflow: hidden;
   background: var(--bg-primary);
+  position: relative;
+}
+
+.lang-toggle {
+  position: fixed;
+  top: 12px;
+  right: 16px;
+  z-index: 100;
+  font-size: 13px;
+  padding: 0 14px;
+  opacity: 1;
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.15));
+}
+.lang-toggle:hover {
+  opacity: 1;
+  border-color: var(--accent, #4dabf7);
 }
 
 .left-panel {

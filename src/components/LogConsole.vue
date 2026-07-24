@@ -1,8 +1,8 @@
 <template>
   <div class="log-console">
     <div class="log-header">
-      <span class="log-title">运行日志</span>
-      <n-button size="tiny" quaternary @click="store.logs = []">清空</n-button>
+      <span class="log-title">{{ t('log.title') }}</span>
+      <n-button size="tiny" quaternary @click="store.logs = []">{{ t('log.clear') }}</n-button>
     </div>
     <div class="log-body" ref="logContainer">
       <div
@@ -13,19 +13,33 @@
       >
         <span class="log-time">{{ log.timestamp }}</span>
         <span class="log-level">[{{ log.level.toUpperCase() }}]</span>
-        <span class="log-msg">{{ log.message }}</span>
+        <span class="log-msg">{{ formatLogMessage(log) }}</span>
       </div>
-      <div v-if="store.logs.length === 0" class="log-empty">暂无日志</div>
+      <div v-if="store.logs.length === 0" class="log-empty">{{ t('log.empty') }}</div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
-import { useAppStore } from '../stores/app'
+import { useI18n } from 'vue-i18n'
+import { useAppStore, type LogEntry } from '../stores/app'
 
+const { t } = useI18n()
 const store = useAppStore()
 const logContainer = ref<HTMLElement | null>(null)
+
+// 优先用 i18n key 翻译，未命中或无 key 时回退到原始 message
+function formatLogMessage(log: LogEntry): string {
+  if (log.i18nKey) {
+    const translated = t(log.i18nKey, { ...(log.params || {}) })
+    // vue-i18n 在 key 未命中时返回 key 字符串本身，此时回退到 message
+    if (translated && translated !== log.i18nKey) {
+      return translated
+    }
+  }
+  return log.message
+}
 
 watch(() => store.logs.length, async () => {
   await nextTick()

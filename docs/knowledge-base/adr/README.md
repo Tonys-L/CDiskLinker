@@ -6,6 +6,7 @@
 |------|------|----------|------|----------|------|
 | ADR-001 | 采用 Rust 技术栈与 Slint 图形界面框架 | 技术选型 | Accepted | 全部模块 | 2026-07-21 |
 | ADR-002 | 采用 GitHub Action 自动发布 | 工程基础设施 | Accepted | 发布流程 | 2026-07-24 |
+| ADR-003 | 采用 vue-i18n 实现应用国际化 | 前端架构 | Accepted | UI 层、日志系统 | 2026-07-24 |
 
 ## ADR 生命周期
 
@@ -72,3 +73,4 @@ Draft → Proposed → Accepted → Deprecated → Superseded
 | 日期 | 变更内容 | 变更人 | 关联变更 |
 |------|----------|--------|----------|
 | 2026-07-21 | 初始版本，注册第一个 ADR-001 决策 | Antigravity | — |
+| 2026-07-24 | 新增 ADR-002、ADR-003 | Antigravity | #TASK-release #TASK-i18n |

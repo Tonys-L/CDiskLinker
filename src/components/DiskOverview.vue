@@ -3,22 +3,22 @@
     <div class="disk-info">
       <div class="disk-title">
         <n-tag :type="store.isAdmin ? 'success' : 'error'" size="small" round>
-          {{ store.isAdmin ? '管理员' : '未提权' }}
+          {{ store.isAdmin ? t('disk.admin') : t('disk.notElevated') }}
         </n-tag>
-        <span class="disk-label">C盘空间概览</span>
+        <span class="disk-label">{{ t('disk.title') }}</span>
       </div>
       <div v-if="store.diskInfo" class="disk-details">
         <div class="disk-stats">
           <div class="stat">
-            <span class="stat-label">总容量</span>
+            <span class="stat-label">{{ t('disk.total') }}</span>
             <span class="stat-value">{{ store.diskInfo.total }}</span>
           </div>
           <div class="stat">
-            <span class="stat-label">可用空间</span>
+            <span class="stat-label">{{ t('disk.free') }}</span>
             <span class="stat-value highlight">{{ store.diskInfo.free }}</span>
           </div>
           <div class="stat">
-            <span class="stat-label">已使用</span>
+            <span class="stat-label">{{ t('disk.used') }}</span>
             <span class="stat-value warn">{{ (store.diskInfo.used_percent * 100).toFixed(1) }}%</span>
           </div>
         </div>
@@ -32,22 +32,24 @@
           indicator-placement="inside"
         />
       </div>
-      <div v-else class="disk-loading">加载中...</div>
+      <div v-else class="disk-loading">{{ t('common.loading') }}</div>
     </div>
     <div class="actions">
       <n-button v-if="!store.isAdmin" type="warning" size="small" @click="store.elevateSelf()">
-        提权运行
+        {{ t('disk.elevate') }}
       </n-button>
       <n-button type="primary" size="small" @click="store.refreshDiskInfo()">
-        刷新
+        {{ t('common.refresh') }}
       </n-button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { useAppStore } from '../stores/app'
 
+const { t } = useI18n()
 const store = useAppStore()
 </script>
 

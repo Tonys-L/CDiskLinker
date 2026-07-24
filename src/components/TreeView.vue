@@ -1,10 +1,10 @@
 <template>
   <div class="tree-view">
     <div class="tree-header">
-      <span class="tree-title">C盘目录</span>
+      <span class="tree-title">{{ t('tree.title') }}</span>
       <div class="tree-actions">
         <n-button type="primary" size="small" :loading="store.migrationStatus === 'Scanning'" @click="store.scanDisk()">
-          {{ store.treeNodes.length > 0 ? '重新扫描' : '开始扫描' }}
+          {{ store.treeNodes.length > 0 ? t('tree.rescan') : t('tree.scan') }}
         </n-button>
       </div>
     </div>
@@ -51,34 +51,34 @@
         </span>
         <!-- 名称与大小 -->
         <span class="node-name">{{ node.name }}</span>
-        <span class="node-size">{{ node.rating === 'Forbidden' ? '—' : (node.size_text || '计算中...') }}</span>
+        <span class="node-size">{{ node.rating === 'Forbidden' ? '—' : (node.size_text || t('tree.calculating')) }}</span>
         <!-- 评级标签 -->
         <n-tag
           v-if="node.rating === 'Warning'"
           size="tiny"
           type="warning"
           :bordered="false"
-        >警告</n-tag>
+        >{{ t('tree.warning') }}</n-tag>
         <n-tag
           v-if="node.rating === 'Forbidden'"
           size="tiny"
           type="error"
           :bordered="false"
-        >禁用</n-tag>
+        >{{ t('tree.forbidden') }}</n-tag>
         <n-tag
           v-if="node.is_junction"
           size="tiny"
           type="info"
           :bordered="false"
-        >已迁移</n-tag>
+        >{{ t('tree.migrated') }}</n-tag>
       </div>
       <div v-if="store.treeNodes.length === 0" class="tree-empty">
         <template v-if="store.migrationStatus === 'Scanning'">
           <n-spin size="small" />
-          <span style="margin-left: 8px">{{ store.scanDetail || '扫描中...' }}</span>
+          <span style="margin-left: 8px">{{ store.scanDetail || t('tree.scanning') }}</span>
         </template>
         <template v-else>
-          点击"开始扫描"查看C盘目录结构
+          {{ t('tree.empty') }}
         </template>
       </div>
     </div>
@@ -86,9 +86,11 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { useAppStore } from '../stores/app'
 import type { TreeNode } from '../stores/app'
 
+const { t } = useI18n()
 const store = useAppStore()
 
 function onNodeClick(node: TreeNode) {

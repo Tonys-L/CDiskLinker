@@ -2,25 +2,27 @@
   <n-modal
     v-model:show="store.showWarningDialog"
     preset="dialog"
-    title="迁移风险确认"
+    :title="t('migration.warningTitle')"
     type="warning"
-    positive-text="确认迁移"
-    negative-text="取消"
+    :positive-text="t('migration.warningPositive')"
+    :negative-text="t('migration.warningNegative')"
     @positive-click="store.doMigration()"
   >
-    <p>以下目录属于配置数据区，迁移后可能导致相关软件配置丢失：</p>
+    <p>{{ t('migration.warningBody') }}</p>
     <ul class="warning-list">
       <li v-for="name in store.warningPaths" :key="name">{{ name }}</li>
     </ul>
     <p style="margin-top: 10px; color: var(--text-secondary); font-size: 12px;">
-      确认迁移请点击"确认迁移"，这些目录的数据将被物理移至目标盘并建立联接。
+      {{ t('migration.warningConfirm') }}
     </p>
   </n-modal>
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { useAppStore } from '../stores/app'
 
+const { t } = useI18n()
 const store = useAppStore()
 </script>
 

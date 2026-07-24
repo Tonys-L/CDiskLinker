@@ -1,18 +1,18 @@
 <template>
   <div class="target-selector">
     <div class="selector-header">
-      <span class="selector-title">迁移目标</span>
+      <span class="selector-title">{{ t('target.title') }}</span>
     </div>
     <div class="selector-body">
       <div class="target-path-row">
         <n-input
           v-model:value="store.targetPath"
-          placeholder="例如 D:\CDiskLinker_Moved"
+          :placeholder="t('target.placeholder')"
           size="small"
           clearable
         />
         <n-button size="small" @click="browseFolder" quaternary>
-          浏览
+          {{ t('common.browse') }}
         </n-button>
       </div>
       <div class="drive-shortcuts">
@@ -24,12 +24,12 @@
           style="cursor: pointer"
           @click="selectDrive(d)"
         >
-          {{ d }}: 盘
+          {{ t('target.driveLabel', { drive: d }) }}
         </n-tag>
       </div>
       <div v-if="targetInfo" class="target-info">
-        <span>目标盘可用: <strong class="highlight">{{ targetInfo.free }}</strong></span>
-        <span>总容量: {{ targetInfo.total }}</span>
+        <span>{{ t('target.free2') }}: <strong class="highlight">{{ targetInfo.free }}</strong></span>
+        <span>{{ t('target.total2') }}: {{ targetInfo.total }}</span>
       </div>
     </div>
   </div>
@@ -37,10 +37,12 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useAppStore } from '../stores/app'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 
+const { t } = useI18n()
 const store = useAppStore()
 const drives = ['D', 'E', 'F', 'G']
 const targetInfo = ref<{ total: string; free: string } | null>(null)
@@ -54,7 +56,7 @@ async function browseFolder() {
     const selected = await open({
       directory: true,
       multiple: false,
-      title: '选择迁移目标文件夹',
+      title: t('target.selectFolder'),
     })
     if (selected && typeof selected === 'string') {
       store.targetPath = selected

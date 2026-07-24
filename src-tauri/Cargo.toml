@@ -1,6 +1,6 @@
 [package]
 name = "cdisklinker"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 authors = ["Antigravity"]
 description = "A lightweight Windows tool to release C drive space by creating Directory Junctions safely."
