@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4f46e5"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
+  </defs>
+  <!-- 圆角方形背景 -->
+  <rect width="1024" height="1024" rx="220" ry="220" fill="url(#bg)"/>
+  <!-- C 字母（路径绘制，开口向右） -->
+  <path d="M 608 392 A 240 240 0 1 0 608 632 L 521 582 A 140 140 0 1 1 521 442 Z" fill="#fff"/>
+  <!-- 流动箭头（双层，体现数据从 C 盘释放） -->
+  <g stroke="#fff" stroke-width="48" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M 660 440 L 780 512 L 660 584" opacity="0.45"/>
+    <path d="M 740 440 L 860 512 L 740 584"/>
+  </g>
+</svg>

@@ -1,80 +1,84 @@
+English | [简体中文](./README.zh-CN.md)
+
+🌐 Website: https://cdl.8421.fun
+
 # CDiskLinker
 
-C 盘空间释放工具 — 把 C 盘里占空间的大文件夹搬到其他盘，搬家后软件照样能正常打开，不需要重新安装或修改配置。
+A Windows tool that frees up C drive space by moving large folders to other drives. After migration, your apps still work from their original paths — no reinstall or reconfiguration needed.
 
-## 功能特性
+## Features
 
-- **安全搬家**：复制→逐文件校验→删除源→创建链接，每一步都有 SHA256 校验，确保零文件丢失
-- **搬家后正常使用**：搬迁后在原位置自动创建目录快捷方式，软件照常从原路径访问，无感知
-- **断电恢复**：意外关机或崩溃后，重新打开工具可自动恢复到断点继续
-- **占用检测**：迁移前检测文件是否被占用，删除失败时定位具体是哪个文件被哪个进程占用
-- **异步扫描**：目录树秒开，文件大小后台异步计算
-- **管理员提权**：自动检测并请求管理员权限
+- **Safe Migration**: Copy → per-file verification → delete source → create junction. Every step is guarded by SHA256 checksums to guarantee zero data loss
+- **Apps Keep Working**: Automatically creates a Directory Junction at the original location, so apps access files from the original path with no awareness of the move
+- **Crash Recovery**: After a power failure or crash, reopening the tool resumes from the last checkpoint
+- **Lock Detection**: Scans for file locks before migration. If deletion fails, it pinpoints exactly which file is held by which process
+- **Async Scanning**: Directory tree opens instantly; file sizes are computed in the background
+- **Auto Elevation**: Automatically detects and requests administrator privileges
 
-## 注意事项
+## Important Notes
 
-### 哪些目录可以安全迁移
+### Which Directories Can Be Safely Migrated
 
-✅ **通常可以迁移**：
-- 游戏平台目录（如 Steam、Epic Games）
-- 聊天软件缓存（如微信、QQ 的文件缓存目录）
-- 开发工具目录（如 Node.js 全局包、Maven 仓库）
-- 下载目录、临时文件目录
+✅ **Usually safe to migrate**:
+- Game platform directories (e.g. Steam, Epic Games)
+- Chat app caches (e.g. WeChat, QQ file cache directories)
+- Developer tool directories (e.g. Node.js global packages, Maven repository)
+- Download and temporary file directories
 
-⚠️ **可能有问题，迁移前请确认**：
-- **某些软件会检测真实路径**：少数软件会识别"快捷方式"与"真实文件夹"的区别，导致迁移后无法正常使用
-- **系统目录不要迁移**：`Windows`、`Program Files`、`Users` 等系统关键目录严禁迁移，否则可能导致系统无法启动
-- **有加密/DRM 的软件目录**：部分加密软件可能绑定物理路径，迁移后可能需要重新激活
-- **注册表中写死了绝对路径的软件**：如果软件在注册表中记录了安装路径，迁移后可能需要手动修改注册表或重新安装
+⚠️ **May have issues — confirm before migrating**:
+- **Some apps detect real paths**: A few apps distinguish between shortcuts and real folders, which may cause them to malfunction after migration
+- **Never migrate system directories**: `Windows`, `Program Files`, `Users` and other critical system directories must never be migrated — doing so may make the system unbootable
+- **Encrypted/DRM-protected software**: Some encrypted software may be bound to physical paths and require reactivation after migration
+- **Apps with hardcoded registry paths**: If an app records its install path in the registry, you may need to manually edit the registry or reinstall after migration
 
-### 迁移前必读
+### Must-Read Before Migration
 
-1. **确认软件是否支持**：最简单的方式是问 AI（如"XXX 软件安装目录可以用符号链接/目录联接迁移到其他盘吗？"），也可以这样实际测试：
-   - 在软件安装目录下新建一个子文件夹，放几个文件进去
-   - 用本工具迁移这个子文件夹到其他盘
-   - 打开软件，确认功能正常后再迁移整个目录
-   - 如果迁移失败，本工具会自动回滚；如果迁移成功但软件报错，需要手动删除链接并把文件搬回
-2. **确保目标盘空间充足**：目标盘需要比源目录占用空间更大（至少多 1GB 余量）
-3. **关闭正在使用的软件**：迁移前关闭源目录中被占用的软件，避免文件锁定导致迁移失败
-4. **目标盘必须是 NTFS 格式**：不支持 FAT32/exFAT 等其他文件系统
+1. **Verify app compatibility**: The easiest way is to ask an AI (e.g. "Can [app name]'s install directory be migrated to another drive using a symbolic link / directory junction?"). You can also test it practically:
+   - Create a subfolder inside the app's install directory and put a few files in it
+   - Migrate this subfolder to another drive with this tool
+   - Open the app and confirm everything works before migrating the entire directory
+   - If migration fails, the tool rolls back automatically; if migration succeeds but the app errors, you'll need to manually delete the junction and move the files back
+2. **Ensure sufficient target drive space**: The target drive must be larger than the source directory (with at least 1GB headroom)
+3. **Close running apps**: Close apps that are using files in the source directory before migration to avoid file lock failures
+4. **Target drive must be NTFS**: FAT32/exFAT and other file systems are not supported
 
-## 安全保障
+## Safety Guarantees
 
-1. **逐文件校验**：删除源文件之前，每个文件的路径、大小、SHA256 必须完全一致，否则不会删除
-2. **占用检测**：迁移前检测文件占用，删除失败时精确定位被占用的文件和进程
-3. **链接安全**：复制时保留目录链接结构，删除时只删链接不删目标数据
-4. **唯一副本保护**：源文件删除后，目标数据是唯一副本，任何步骤失败都不删除数据
-5. **自动修复**：迁移期间源文件被修改时，自动同步差异文件并重新校验
+1. **Per-file Verification**: Before deleting the source, every file's path, size, and SHA256 must match exactly — otherwise the source is not deleted
+2. **Lock Detection**: Scans for file locks before migration; pinpoints the locked file and process on deletion failure
+3. **Junction Safety**: Preserves directory junction structure during copy; deletes only the junction, never the target data
+4. **Single-Copy Protection**: After the source is deleted, the target data is the only copy — no step failure will delete it
+5. **Auto Repair**: When source files are modified during migration, the tool automatically syncs the differences and re-verifies
 
-## 开发
+## Development
 
 ```bash
-# 安装依赖
+# Install dependencies
 npm install
 
-# 开发模式
+# Development mode
 npx tauri dev
 
-# 打包
+# Build
 npx tauri build
 ```
 
-## 项目结构
+## Project Structure
 
 ```
 CDiskLinker/
-├── src/                    # Vue 3 前端
-│   ├── components/         # UI 组件
-│   ├── stores/             # Pinia 状态管理
-│   └── views/              # 页面视图
-├── src-tauri/              # Rust 后端
+├── src/                    # Vue 3 frontend
+│   ├── components/         # UI components
+│   ├── stores/             # Pinia state management
+│   └── views/              # Page views
+├── src-tauri/              # Rust backend
 │   └── src/
-│       ├── engine.rs       # 迁移引擎（校验、复制、删除、建链）
-│       ├── win_util.rs     # Windows API（目录链接、文件锁、提权）
-│       ├── journal.rs      # 事务日志（崩溃恢复）
-│       ├── scanner.rs      # 目录扫描
-│       └── commands.rs     # Tauri Command 桥接
-└── docs/knowledge-base/    # 知识库（约束、流程、术语）
+│       ├── engine.rs       # Migration engine (verify, copy, delete, link)
+│       ├── win_util.rs     # Windows API (junction, file lock, elevation)
+│       ├── journal.rs      # Transaction journal (crash recovery)
+│       ├── scanner.rs      # Directory scanner
+│       └── commands.rs     # Tauri command bridge
+└── docs/knowledge-base/    # Knowledge base (constraints, flows, glossary)
 ```
 
 ## License
