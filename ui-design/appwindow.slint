@@ -1,0 +1,262 @@
+// appwindow.slint - CDiskLinker 主窗口
+import { TreeView } from "components/TreeView.slint";
+import { WarningDialog } from "components/WarningDialog.slint";
+import { StatusPanel } from "components/StatusPanel.slint";
+import { LogConsole } from "components/LogConsole.slint";
+import { JournalBar } from "components/JournalBar.slint";
+import { DiskOverview } from "components/DiskOverview.slint";
+import { TargetSelector } from "components/TargetSelector.slint";
+
+export component AppWindow inherits Window {
+    // === 数据接口 (由 Rust 后端注入) ===
+    in property <[TreeNode]> scan-results: [];
+    in property <float> c-disk-used-percent: 0.7;
+    in property <string> c-disk-total: "512 GB";
+    in property <string> c-disk-free: "154 GB";
+    in property <string> target-drive: "D:";
+    in property <string> target-drive-free: "890 GB";
+    in property <MigrationStatus> current-status: MigrationStatus.Idle;
+    in property <float> progress-percent: 0.0;
+    in property <string> progress-detail: "";
+    in property <[LogEntry]> log-entries: [];
+    in property <string> journal-stage: "空闲";
+    in property <bool> has-pending-journal: false;
+    in property <string> selected-size-summary: "已选 0 项 | 预计释放: 0 GB";
+    in property <int> selected-count: 0;
+
+    // === 回调 (由 Rust 后端处理) ===
+    pure callback scan-disk();
+    pure callback migrate-selected();
+    pure callback rollback-journal();
+    pure callback confirm-warning();
+    pure callback cancel-warning();
+    pure callback toggle-node-expanded(int);
+    pure callback toggle-node-selected(int);
+    pure callback target-drive-changed(string);
+
+    // === 内部状态 ===
+    in-out property <bool> show-warning-dialog: false;
+    in-out property <string> warning-target-path: "";
+    in-out property <string> warning-message: "";
+
+    title: "C盘移链助手 (CDiskLinker)";
+    min-width: 1100px;
+    min-height: 700px;
+    background: Theme.bg-primary;
+
+    // === 顶部导航栏 ===
+    Rectangle {
+        height: 56px;
+        background: Theme.bg-card;
+        border-bottom-width: 1px;
+        border-bottom-color: Theme.border-color;
+
+        HorizontalLayout {
+            padding-left: 24px;
+            padding-right: 24px;
+            alignment: space-between;
+
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: start;
+                vertical-stretch: 0;
+
+                Text {
+                    text: "C盘移链助手 (CDiskLinker)";
+                    color: Theme.text-primary;
+                    font-size: 18px;
+                    font-weight: 600;
+                }
+                Text {
+                    text: "v2.0.0 | Rust Core + Slint UI";
+                    color: Theme.text-muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: end;
+                vertical-stretch: 0;
+
+                // 管理员权限标识
+                Rectangle {
+                    width: 120px;
+                    height: 28px;
+                    background: Theme.success-bg;
+                    border-radius: 14px;
+                    border-width: 1px;
+                    border-color: Theme.success;
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 6px;
+                        Rectangle {
+                            width: 8px; height: 8px;
+                            background: Theme.success;
+                            border-radius: 4px;
+                        }
+                        Text {
+                            text: "管理员权限";
+                            color: Theme.success;
+                            font-size: 11px;
+                            font-weight: 500;
+                        }
+                    }
+                }
+
+                // 扫描按钮
+                Button {
+                    text: "重新扫描";
+                    primary: true;
+                    clicked => { root.scan-disk(); }
+                }
+            }
+        }
+    }
+
+    // === 主内容区 ===
+    HorizontalLayout {
+        y: 56px;
+        height: root.height - 56px - 72px; // 减去顶部和底部日志栏
+        padding: 20px;
+        spacing: 20px;
+
+        // === 左侧面板 ===
+        VerticalLayout {
+            width: 280px;
+            spacing: 16px;
+
+            DiskOverview {
+                used-percent: root.c-disk-used-percent;
+                total: root.c-disk-total;
+                free: root.c-disk-free;
+            }
+
+            TargetSelector {
+                current-drive: root.target-drive;
+                free-space: root.target-drive-free;
+                drive-changed(drive) => { root.target-drive-changed(drive); }
+            }
+        }
+
+        // === 中间树形列表 ===
+        TreeView {
+            nodes: root.scan-results;
+            summary-text: root.selected-size-summary;
+            selected-count: root.selected-count;
+            toggle-expanded(idx) => { root.toggle-node-expanded(idx); }
+            toggle-selected(idx) => { root.toggle-node-selected(idx); }
+            migrate-clicked => { root.migrate-selected(); }
+        }
+
+        // === 右侧面板 ===
+        VerticalLayout {
+            width: 276px;
+            spacing: 16px;
+
+            StatusPanel {
+                current-status: root.current-status;
+                progress-percent: root.progress-percent;
+                progress-detail: root.progress-detail;
+            }
+
+            LogConsole {
+                entries: root.log-entries;
+            }
+        }
+    }
+
+    // === 底部事务日志栏 ===
+    JournalBar {
+        y: root.height - 72px;
+        height: 56px;
+        stage: root.journal-stage;
+        has-pending: root.has-pending-journal;
+        rollback-clicked => { root.rollback-journal(); }
+    }
+
+    // === 警告弹窗 (模态覆盖层) ===
+    if root.show-warning-dialog: Rectangle {
+        x: 0; y: 0;
+        width: root.width;
+        height: root.height;
+        background: #00000080;
+
+        WarningDialog {
+            target-path: root.warning-target-path;
+            message: root.warning-message;
+            confirm-clicked => { root.confirm-warning(); }
+            cancel-clicked => { root.cancel-warning(); }
+        }
+    }
+}
+
+// === 全局主题定义 ===
+export global Theme {
+    out property <color> bg-primary: #0f172a;
+    out property <color> bg-card: #1e293b;
+    out property <color> bg-hover: #334155;
+    out property <color> border-color: #334155;
+
+    out property <color> text-primary: #f8fafc;
+    out property <color> text-secondary: #94a3b8;
+    out property <color> text-muted: #64748b;
+
+    out property <color> success: #10b981;
+    out property <color> success-bg: #10b98133;
+    out property <color> warning: #f59e0b;
+    out property <color> warning-bg: #f59e0b33;
+    out property <color> danger: #ef4444;
+    out property <color> danger-bg: #ef444433;
+    out property <color> info: #3b82f6;
+    out property <color> info-bg: #3b82f633;
+    out property <color> junction: #8b5cf6;
+    out property <color> junction-bg: #8b5cf633;
+
+    out property <color> progress-start: #3b82f6;
+    out property <color> progress-end: #2563eb;
+}
+
+// === 数据模型枚举 ===
+export enum DirectoryRating {
+    Safe,
+    Warning,
+    Forbidden
+}
+
+export enum MigrationStatus {
+    Idle,
+    Scanning,
+    Initiated,
+    Copying,
+    Validating,
+    Linking,
+    Completed,
+    RollingBack,
+    Error
+}
+
+// === 数据结构 ===
+export struct TreeNode {
+    id: int,
+    path: string,
+    name: string,
+    size-text: string,
+    actual-size-bytes: int,
+    rating: DirectoryRating,
+    level: int,              // 层级深度 0=根, 1=子, 2=孙...
+    is-expanded: bool,
+    has-children: bool,
+    is-selected: bool,
+    is-junction: bool,       // 是否已建立目录联接
+    is-visible: bool,        // 父级是否展开决定可见性
+    children-count: int,
+}
+
+export struct LogEntry {
+    timestamp: string,
+    level: string,           // "info", "warn", "error", "success"
+    message: string,
+}

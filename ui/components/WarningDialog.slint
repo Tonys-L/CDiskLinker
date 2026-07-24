@@ -1,0 +1,106 @@
+// components/WarningDialog.slint - 高风险迁移确认弹窗
+import { Theme } from "../global.slint";
+
+export component WarningDialog inherits Rectangle {
+    in property <string> target-path: "";
+    in property <string> message: "";
+
+    pure callback confirm-clicked();
+    pure callback cancel-clicked();
+
+    width: 400px;
+    height: 220px;
+    background: Theme.bg-card;
+    border-radius: 16px;
+    border-width: 2px;
+    border-color: Theme.warning;
+
+
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 16px;
+        alignment: center;
+
+        // 警告图标 + 标题
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: center;
+
+            Text {
+                text: "⚠️";
+                font-size: 24px;
+            }
+            Text {
+                text: "高风险迁移警告";
+                color: Theme.warning;
+                font-size: 18px;
+                font-weight: 700;
+            }
+        }
+
+        // 目标路径
+        Text {
+            text: "目标: " + root.target-path;
+            color: Theme.text-primary;
+            font-size: 13px;
+            horizontal-alignment: center;
+        }
+
+        // 警告详情
+        Text {
+            text: root.message;
+            color: Theme.text-secondary;
+            font-size: 12px;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+
+        // 按钮组
+        HorizontalLayout {
+            spacing: 16px;
+            alignment: center;
+
+            // 取消按钮
+            Rectangle {
+                width: 120px;
+                height: 40px;
+                background: Theme.bg-hover;
+                border-radius: 8px;
+
+                Text {
+                    text: "取消";
+                    color: Theme.text-primary;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                TouchArea {
+                    clicked => { root.cancel-clicked(); }
+                }
+            }
+
+            // 确认按钮
+            Rectangle {
+                width: 120px;
+                height: 40px;
+                background: Theme.warning;
+                border-radius: 8px;
+
+                Text {
+                    text: "确认迁移";
+                    color: #ffffff;
+                    font-size: 14px;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                TouchArea {
+                    clicked => { root.confirm-clicked(); }
+                }
+            }
+        }
+    }
+}

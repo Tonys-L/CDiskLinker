@@ -1,0 +1,288 @@
+// components/TreeView.slint - 可展开树形扫描结果列表
+import { Theme, DirectoryRating, TreeNode } from "../appwindow.slint";
+
+export component TreeView inherits Rectangle {
+    in property <[TreeNode]> nodes: [];
+    in property <string> summary-text: "";
+    in property <int> selected-count: 0;
+
+    pure callback toggle-expanded(int);
+    pure callback toggle-selected(int);
+    pure callback migrate-clicked();
+
+    background: Theme.bg-card;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: Theme.border-color;
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+
+        // 标题
+        Text {
+            text: "可迁移目录扫描结果 (树形视图)";
+            color: Theme.text-secondary;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        // 表头
+        Rectangle {
+            height: 36px;
+            background: Theme.bg-primary;
+            border-radius: 6px;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                alignment: start;
+
+                Text { text: "展开"; color: Theme.text-muted; font-size: 12px; width: 40px; }
+                Text { text: "选择"; color: Theme.text-muted; font-size: 12px; width: 40px; }
+                Text { text: "目录路径"; color: Theme.text-muted; font-size: 12px; width: 240px; }
+                Text { text: "大小"; color: Theme.text-muted; font-size: 12px; width: 80px; }
+                Text { text: "评级"; color: Theme.text-muted; font-size: 12px; width: 60px; }
+                Text { text: "操作"; color: Theme.text-muted; font-size: 12px; width: 50px; }
+            }
+        }
+
+        // 树形列表 (ScrollView)
+        ScrollView {
+            height: parent.height - 140px;
+
+            VerticalLayout {
+                spacing: 4px;
+
+                for node in root.nodes: TreeItem {
+                    node-data: node;
+                    toggle-expanded => { root.toggle-expanded(node.id); }
+                    toggle-selected => { root.toggle-selected(node.id); }
+                }
+            }
+        }
+
+        // 底部统计栏
+        Rectangle {
+            height: 36px;
+            background: Theme.bg-primary;
+            border-radius: 6px;
+
+            Text {
+                x: 12px;
+                text: root.summary-text;
+                color: Theme.text-secondary;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+        }
+
+        // 一键迁移按钮
+        Rectangle {
+            height: 44px;
+            background: Theme.info;
+            border-radius: 8px;
+
+            Text {
+                text: "🚀 一键安全迁移 (" + root.selected-count + "项)";
+                color: #ffffff;
+                font-size: 15px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            TouchArea {
+                clicked => { root.migrate-clicked(); }
+            }
+        }
+    }
+}
+
+// === 单个树节点组件 ===
+component TreeItem inherits Rectangle {
+    in property <TreeNode> node-data;
+
+    pure callback toggle-expanded();
+    pure callback toggle-selected();
+
+    height: node-data.is-visible ? (node-data.has-children ? 48px : 44px) : 0px;
+    visible: node-data.is-visible;
+
+    // 评级颜色
+    pure function rating-color() -> color {
+        if node-data.rating == DirectoryRating.Safe { return Theme.success; }
+        if node-data.rating == DirectoryRating.Warning { return Theme.warning; }
+        return Theme.danger;
+    }
+
+    pure function rating-bg() -> color {
+        if node-data.rating == DirectoryRating.Safe { return Theme.success-bg; }
+        if node-data.rating == DirectoryRating.Warning { return Theme.warning-bg; }
+        return Theme.danger-bg;
+    }
+
+    pure function rating-text() -> string {
+        if node-data.rating == DirectoryRating.Safe { return "安全"; }
+        if node-data.rating == DirectoryRating.Warning { return "警告"; }
+        return "禁止";
+    }
+
+    // 是否可操作
+    pure function is-actionable() -> bool {
+        return node-data.rating != DirectoryRating.Forbidden && !node-data.is-junction;
+    }
+
+    background: Theme.bg-primary;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Theme.border-color;
+
+    // 左侧评级指示条
+    Rectangle {
+        x: 0; y: 0;
+        width: 4px;
+        height: parent.height;
+        background: root.rating-color();
+        border-radius: 2px;
+    }
+
+    HorizontalLayout {
+        x: 8px;
+        padding-left: 4px;
+        padding-right: 12px;
+        spacing: 8px;
+        alignment: start;
+        vertical-stretch: 1;
+
+        // 展开/折叠按钮
+        Rectangle {
+            width: 32px;
+            height: parent.height;
+
+            if node-data.has-children: Text {
+                text: node-data.is-expanded ? "▼" : "▶";
+                color: Theme.text-secondary;
+                font-size: 10px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            TouchArea {
+                clicked => { root.toggle-expanded(); }
+            }
+        }
+
+        // 复选框
+        Rectangle {
+            width: 32px;
+            height: parent.height;
+
+            if root.is-actionable(): Rectangle {
+                width: 16px; height: 16px;
+                background: node-data.is-selected ? root.rating-color() : Theme.bg-card;
+                border-width: 2px;
+                border-color: root.rating-color();
+                border-radius: 4px;
+
+                if node-data.is-selected: Text {
+                    text: "✓";
+                    color: #ffffff;
+                    font-size: 10px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            TouchArea {
+                clicked => { root.toggle-selected(); }
+            }
+        }
+
+        // 路径信息
+        VerticalLayout {
+            width: 220px;
+            alignment: center;
+
+            Text {
+                text: node-data.name;
+                color: node-data.rating == DirectoryRating.Forbidden ? Theme.text-muted : Theme.text-primary;
+                font-size: node-data.level == 0 ? 13px : 12px;
+                font-weight: node-data.level == 0 ? 600 : 400;
+                overflow: elide;
+            }
+
+            if node-data.children-count > 0: Text {
+                text: node-data.children-count + " 个子项";
+                color: Theme.text-muted;
+                font-size: 10px;
+            }
+        }
+
+        // 大小
+        Text {
+            text: node-data.is-junction ? "—" : node-data.size-text;
+            color: node-data.is-junction ? Theme.junction : Theme.text-primary;
+            font-size: 12px;
+            font-weight: 600;
+            width: 80px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+
+        // 评级标签
+        Rectangle {
+            width: 50px;
+            height: 20px;
+            background: root.rating-bg();
+            border-radius: 4px;
+
+            Text {
+                text: root.rating-text();
+                color: root.rating-color();
+                font-size: 10px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        // 操作按钮
+        Rectangle {
+            width: 40px;
+            height: parent.height;
+
+            if node-data.is-junction: Text {
+                text: "✓";
+                color: Theme.junction;
+                font-size: 14px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            else if root.is-actionable(): Rectangle {
+                width: 32px; height: 26px;
+                background: Theme.info;
+                border-radius: 6px;
+
+                Text {
+                    text: "迁";
+                    color: #ffffff;
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                TouchArea {
+                    clicked => { root.toggle-selected(); }
+                }
+            }
+            else: Text {
+                text: "—";
+                color: Theme.text-muted;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

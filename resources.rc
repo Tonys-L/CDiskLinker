@@ -1,0 +1,5 @@
+#define CREATEPROCESS_MANIFEST_RESOURCE_ID 1
+#define RT_MANIFEST 24
+
+// 将 app.manifest 嵌入作为 Windows 清单资源，使打包出的 exe 直接请求管理员权限
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "app.manifest"
