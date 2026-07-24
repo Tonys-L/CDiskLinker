@@ -19,6 +19,7 @@
       --gray-50: #f9fafb;
       --gray-100: #f3f4f6;
       --gray-200: #e5e7eb;
+      --gray-300: #d1d5db;
       --gray-400: #9ca3af;
       --gray-500: #6b7280;
       --gray-600: #4b5563;
@@ -70,41 +71,16 @@
 
     .container { max-width: 960px; margin: 0 auto; padding: 0 24px; }
 
-    /* Hero */
-    .hero {
-      background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
-      color: #fff;
-      padding: 80px 0 60px;
-      text-align: center;
-    }
-    .hero h1 {
-      font-size: 2.5rem;
-      font-weight: 800;
-      margin-bottom: 16px;
-      letter-spacing: -0.5px;
-    }
-    .hero p {
-      font-size: 1.2rem;
-      opacity: 0.9;
-      max-width: 600px;
-      margin: 0 auto 32px;
-    }
-    .hero-badge {
-      display: inline-block;
-      background: rgba(255,255,255,0.15);
-      padding: 4px 14px;
-      border-radius: 20px;
-      font-size: 0.85rem;
-      margin-bottom: 16px;
-      backdrop-filter: blur(4px);
-    }
+    /* Buttons */
     .btn-primary {
-      display: inline-block;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
       background: #fff;
       color: var(--primary);
-      padding: 14px 36px;
+      padding: 13px 32px;
       border-radius: 10px;
-      font-size: 1.05rem;
+      font-size: 1.02rem;
       font-weight: 600;
       transition: transform 0.15s, box-shadow 0.15s;
       text-decoration: none;
@@ -114,170 +90,29 @@
       box-shadow: 0 8px 24px rgba(0,0,0,0.2);
       text-decoration: none;
     }
-
-    /* Sections */
-    section { padding: 64px 0; }
-    section:nth-child(even) { background: var(--gray-50); }
-    .section-title {
-      font-size: 1.75rem;
-      font-weight: 700;
-      color: var(--gray-900);
-      text-align: center;
-      margin-bottom: 12px;
-    }
-    .section-desc {
-      text-align: center;
-      color: var(--gray-500);
-      max-width: 560px;
-      margin: 0 auto 40px;
-    }
-
-    /* Feature Grid */
-    .feature-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 24px;
-    }
-    .feature-card {
-      background: #fff;
-      border: 1px solid var(--gray-200);
-      border-radius: 12px;
-      padding: 28px;
-      transition: box-shadow 0.2s;
-    }
-    .feature-card:hover { box-shadow: 0 8px 24px rgba(0,0,0,0.06); }
-    .feature-icon {
-      width: 44px;
-      height: 44px;
-      border-radius: 10px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 1.4rem;
-      margin-bottom: 16px;
-    }
-    .feature-card h3 { font-size: 1.1rem; margin-bottom: 8px; color: var(--gray-900); }
-    .feature-card p { font-size: 0.9rem; color: var(--gray-600); }
-
-    /* Safety */
-    .safety-list {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 20px;
-      counter-reset: safety;
-    }
-    .safety-item {
-      display: flex;
-      gap: 16px;
-      padding: 20px;
-      background: #fff;
-      border: 1px solid var(--gray-200);
-      border-radius: 12px;
-    }
-    .safety-num {
-      flex-shrink: 0;
-      width: 36px;
-      height: 36px;
-      background: var(--green-bg);
-      color: var(--green);
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 700;
-      font-size: 0.95rem;
-    }
-    .safety-item h3 { font-size: 0.95rem; color: var(--gray-900); margin-bottom: 4px; }
-    .safety-item p { font-size: 0.85rem; color: var(--gray-600); }
-
-    /* Notice */
-    .notice-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 24px;
-    }
-    @media (max-width: 640px) { .notice-grid { grid-template-columns: 1fr; } }
-    .notice-box {
-      padding: 24px;
-      border-radius: 12px;
-      border: 1px solid;
-    }
-    .notice-box.safe { background: var(--green-bg); border-color: #a7f3d0; }
-    .notice-box.warn { background: var(--amber-bg); border-color: #fde68a; }
-    .notice-box h3 {
-      font-size: 1rem;
-      margin-bottom: 12px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .notice-box ul { list-style: none; padding: 0; }
-    .notice-box li {
-      font-size: 0.88rem;
-      padding: 6px 0;
-      padding-left: 20px;
-      position: relative;
-      color: var(--gray-700);
-    }
-    .notice-box li::before {
-      position: absolute;
-      left: 0;
-    }
-    .notice-box.safe li::before { content: "\2713"; color: var(--green); font-weight: 700; }
-    .notice-box.warn li::before { content: "!"; color: var(--amber); font-weight: 700; }
-
-    /* Steps */
-    .steps {
-      display: flex;
-      gap: 16px;
-      justify-content: center;
-      flex-wrap: wrap;
-    }
-    .step {
-      flex: 1;
-      min-width: 160px;
-      max-width: 200px;
-      text-align: center;
-      padding: 24px 16px;
-      background: var(--primary-bg);
-      border-radius: 12px;
-      position: relative;
-    }
-    .step-num {
-      width: 32px;
-      height: 32px;
-      background: var(--primary);
-      color: #fff;
-      border-radius: 50%;
+    .btn-secondary {
       display: inline-flex;
       align-items: center;
-      justify-content: center;
-      font-weight: 700;
-      font-size: 0.9rem;
-      margin-bottom: 12px;
-    }
-    .step h3 { font-size: 0.95rem; color: var(--gray-900); margin-bottom: 6px; }
-    .step p { font-size: 0.82rem; color: var(--gray-600); }
-    .step-arrow {
-      display: flex;
-      align-items: center;
-      color: var(--gray-400);
-      font-size: 1.4rem;
-      align-self: center;
-    }
-    @media (max-width: 640px) { .step-arrow { display: none; } }
-
-    /* Download */
-    section.download-section {
-      text-align: center;
-      background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+      gap: 6px;
+      background: transparent;
       color: #fff;
-      padding: 64px 0;
+      padding: 13px 28px;
+      border-radius: 10px;
+      font-size: 1.02rem;
+      font-weight: 600;
+      border: 1.5px solid rgba(255,255,255,0.4);
+      transition: transform 0.15s, background 0.15s;
+      text-decoration: none;
     }
-    .download-section h2 { font-size: 1.75rem; margin-bottom: 12px; }
-    .download-section p { opacity: 0.9; margin-bottom: 28px; }
+    .btn-secondary:hover {
+      transform: translateY(-2px);
+      background: rgba(255,255,255,0.1);
+      text-decoration: none;
+    }
     .btn-download {
-      display: inline-block;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
       background: #fff;
       color: var(--primary);
       padding: 14px 40px;
@@ -292,8 +127,231 @@
       box-shadow: 0 8px 24px rgba(0,0,0,0.2);
       text-decoration: none;
     }
+
+    /* Hero */
+    .hero {
+      background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+      color: #fff;
+      padding: 88px 0 72px;
+    }
+    .hero-inner {
+      display: flex;
+      align-items: center;
+      gap: 56px;
+    }
+    .hero-icon {
+      flex-shrink: 0;
+      width: 160px;
+      height: 160px;
+      border-radius: 36px;
+      box-shadow: 0 24px 48px rgba(0,0,0,0.25);
+    }
+    .hero-content { flex: 1; }
+    .hero-badge {
+      display: inline-block;
+      background: rgba(255,255,255,0.15);
+      padding: 4px 14px;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      margin-bottom: 16px;
+      backdrop-filter: blur(4px);
+    }
+    .hero h1 {
+      font-size: 2.8rem;
+      font-weight: 800;
+      margin-bottom: 16px;
+      letter-spacing: -0.5px;
+    }
+    .hero p {
+      font-size: 1.15rem;
+      opacity: 0.9;
+      max-width: 520px;
+      margin-bottom: 32px;
+    }
+    .hero-buttons { display: flex; gap: 14px; flex-wrap: wrap; }
+    @media (max-width: 720px) {
+      .hero-inner { flex-direction: column; text-align: center; gap: 32px; }
+      .hero p { margin-left: auto; margin-right: auto; }
+      .hero-buttons { justify-content: center; }
+    }
+
+    /* Sections */
+    section { padding: 72px 0; }
+    section:nth-child(even) { background: var(--gray-50); }
+    .section-title {
+      font-size: 1.85rem;
+      font-weight: 700;
+      color: var(--gray-900);
+      text-align: center;
+      margin-bottom: 12px;
+    }
+    .section-desc {
+      text-align: center;
+      color: var(--gray-500);
+      max-width: 560px;
+      margin: 0 auto 48px;
+    }
+
+    /* Feature Grid */
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 24px;
+    }
+    .feature-card {
+      background: #fff;
+      border: 1px solid var(--gray-200);
+      border-radius: 14px;
+      padding: 32px 28px;
+      transition: box-shadow 0.2s, transform 0.2s;
+    }
+    .feature-card:hover {
+      box-shadow: 0 12px 32px rgba(0,0,0,0.08);
+      transform: translateY(-2px);
+    }
+    .feature-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 18px;
+    }
+    .feature-card h3 { font-size: 1.12rem; margin-bottom: 8px; color: var(--gray-900); }
+    .feature-card p { font-size: 0.9rem; color: var(--gray-600); }
+
+    /* Safety (特性区：编号大卡片) */
+    .safety-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 24px;
+    }
+    .safety-card {
+      background: #fff;
+      border: 1px solid var(--gray-200);
+      border-radius: 14px;
+      padding: 32px 28px;
+      position: relative;
+      transition: box-shadow 0.2s;
+    }
+    .safety-card:hover { box-shadow: 0 12px 32px rgba(0,0,0,0.08); }
+    .safety-num {
+      font-size: 2.4rem;
+      font-weight: 800;
+      color: var(--primary);
+      opacity: 0.2;
+      line-height: 1;
+      margin-bottom: 12px;
+      letter-spacing: -1px;
+    }
+    .safety-card h3 {
+      font-size: 1.1rem;
+      color: var(--gray-900);
+      margin-bottom: 8px;
+    }
+    .safety-card p { font-size: 0.9rem; color: var(--gray-600); }
+
+    /* Notice */
+    .notice-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+    @media (max-width: 640px) { .notice-grid { grid-template-columns: 1fr; } }
+    .notice-box {
+      padding: 28px;
+      border-radius: 14px;
+      border: 1px solid;
+    }
+    .notice-box.safe { background: var(--green-bg); border-color: #a7f3d0; }
+    .notice-box.warn { background: var(--amber-bg); border-color: #fde68a; }
+    .notice-box h3 {
+      font-size: 1.05rem;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--gray-900);
+    }
+    .notice-box ul { list-style: none; padding: 0; }
+    .notice-box li {
+      font-size: 0.9rem;
+      padding: 7px 0;
+      padding-left: 22px;
+      position: relative;
+      color: var(--gray-700);
+    }
+    .notice-box li::before {
+      position: absolute;
+      left: 0;
+      font-weight: 700;
+    }
+    .notice-box.safe li::before { content: "\2713"; color: var(--green); }
+    .notice-box.warn li::before { content: "!"; color: var(--amber); }
+    .notice-tip {
+      text-align: center;
+      margin-top: 32px;
+      padding: 22px;
+      background: var(--primary-bg);
+      border-radius: 14px;
+      max-width: 640px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .notice-tip p { font-size: 0.92rem; color: var(--gray-700); }
+
+    /* Steps */
+    .steps {
+      display: flex;
+      gap: 16px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    .step {
+      flex: 1;
+      min-width: 160px;
+      max-width: 200px;
+      text-align: center;
+      padding: 28px 16px;
+      background: var(--primary-bg);
+      border-radius: 14px;
+    }
+    .step-num {
+      width: 36px;
+      height: 36px;
+      background: var(--primary);
+      color: #fff;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 0.95rem;
+      margin-bottom: 14px;
+    }
+    .step h3 { font-size: 0.98rem; color: var(--gray-900); margin-bottom: 6px; }
+    .step p { font-size: 0.84rem; color: var(--gray-600); }
+    .step-arrow {
+      display: flex;
+      align-items: center;
+      color: var(--gray-300);
+      font-size: 1.6rem;
+      align-self: center;
+    }
+    @media (max-width: 640px) { .step-arrow { display: none; } }
+
+    /* Download CTA */
+    section.download-section {
+      text-align: center;
+      background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+      color: #fff;
+      padding: 80px 0;
+    }
+    .download-section h2 { font-size: 1.9rem; margin-bottom: 12px; }
+    .download-section p { opacity: 0.9; margin-bottom: 32px; }
     .download-meta {
-      margin-top: 16px;
+      margin-top: 20px;
       font-size: 0.85rem;
       opacity: 0.7;
     }
@@ -302,7 +360,7 @@
     footer {
       background: #000;
       text-align: center;
-      padding: 10px 0;
+      padding: 14px 0;
       color: #fff;
       font-size: 0.8rem;
     }
@@ -311,9 +369,9 @@
 
     /* Responsive */
     @media (max-width: 640px) {
-      .hero h1 { font-size: 1.8rem; }
+      .hero h1 { font-size: 2rem; }
       .hero p { font-size: 1rem; }
-      .section-title { font-size: 1.4rem; }
+      .section-title { font-size: 1.5rem; }
     }
   </style>
 </head>
@@ -328,10 +386,18 @@
   <!-- Hero -->
   <header class="hero">
     <div class="container">
-      <span class="hero-badge">Windows 10/11</span>
-      <h1 data-i18n="hero.title">CDiskLinker</h1>
-      <p data-i18n="hero.desc">C 盘又红了？把占空间的大文件夹安全搬到其他盘，搬家后软件照样正常打开，不需要重装</p>
-      <a href="https://github.com/Tonys-L/CDiskLinker/releases" class="btn-primary" data-i18n="hero.download">免费下载</a>
+      <div class="hero-inner">
+        <img src="app-icon.png" alt="CDiskLinker" class="hero-icon">
+        <div class="hero-content">
+          <span class="hero-badge">Windows 10/11</span>
+          <h1 data-i18n="hero.title">CDiskLinker</h1>
+          <p data-i18n="hero.desc">C 盘又红了？把占空间的大文件夹安全搬到其他盘，搬家后软件照样正常打开，不需要重装</p>
+          <div class="hero-buttons">
+            <a href="https://github.com/Tonys-L/CDiskLinker/releases" class="btn-primary" data-i18n="hero.download">免费下载</a>
+            <a href="https://github.com/Tonys-L/CDiskLinker" class="btn-secondary" data-i18n="hero.github">在 GitHub 查看</a>
+          </div>
+        </div>
+      </div>
     </div>
   </header>
 
@@ -343,28 +409,28 @@
       <div class="feature-grid">
         <div class="feature-card">
           <div class="feature-icon" style="background:var(--primary-bg);color:var(--primary);">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
           </div>
           <h3 data-i18n="features.f1.title">零文件丢失</h3>
           <p data-i18n="features.f1.desc">每个文件搬家前后都做 SHA256 校验，一个字节不对都不删源文件</p>
         </div>
         <div class="feature-card">
           <div class="feature-icon" style="background:var(--green-bg);color:var(--green);">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
           </div>
           <h3 data-i18n="features.f2.title">搬家后正常使用</h3>
           <p data-i18n="features.f2.desc">自动在原位置创建目录链接，软件从原路径访问毫无感知，无需重新安装</p>
         </div>
         <div class="feature-card">
           <div class="feature-icon" style="background:var(--amber-bg);color:var(--amber);">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
           </div>
           <h3 data-i18n="features.f3.title">断电也不怕</h3>
           <p data-i18n="features.f3.desc">意外关机、崩溃后重新打开工具，自动恢复到断点继续，数据不会丢</p>
         </div>
         <div class="feature-card">
           <div class="feature-icon" style="background:var(--red-bg);color:var(--red);">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           </div>
           <h3 data-i18n="features.f4.title">精准占用检测</h3>
           <p data-i18n="features.f4.desc">迁移前检测文件是否被占用，删除失败时告诉你哪个文件被哪个进程占着</p>
@@ -411,41 +477,31 @@
     <div class="container">
       <h2 class="section-title" data-i18n="safety.title">五重安全保障</h2>
       <p class="section-desc" data-i18n="safety.desc">你的数据安全是底线，任何步骤出问题都不会丢文件</p>
-      <div class="safety-list">
-        <div class="safety-item">
-          <span class="safety-num">1</span>
-          <div>
-            <h3 data-i18n="safety.s1.title">逐文件 SHA256 校验</h3>
-            <p data-i18n="safety.s1.desc">每个文件搬家前后路径、大小、内容哈希必须完全一致，否则不删源</p>
-          </div>
+      <div class="safety-grid">
+        <div class="safety-card">
+          <div class="safety-num">01</div>
+          <h3 data-i18n="safety.s1.title">逐文件 SHA256 校验</h3>
+          <p data-i18n="safety.s1.desc">每个文件搬家前后路径、大小、内容哈希必须完全一致，否则不删源</p>
         </div>
-        <div class="safety-item">
-          <span class="safety-num">2</span>
-          <div>
-            <h3 data-i18n="safety.s2.title">文件占用检测</h3>
-            <p data-i18n="safety.s2.desc">搬家前检测文件是否被占用，精确定位到具体文件和进程</p>
-          </div>
+        <div class="safety-card">
+          <div class="safety-num">02</div>
+          <h3 data-i18n="safety.s2.title">文件占用检测</h3>
+          <p data-i18n="safety.s2.desc">搬家前检测文件是否被占用，精确定位到具体文件和进程</p>
         </div>
-        <div class="safety-item">
-          <span class="safety-num">3</span>
-          <div>
-            <h3 data-i18n="safety.s3.title">链接安全处理</h3>
-            <p data-i18n="safety.s3.desc">复制时保留目录链接结构，删除时只删链接不删目标数据</p>
-          </div>
+        <div class="safety-card">
+          <div class="safety-num">03</div>
+          <h3 data-i18n="safety.s3.title">链接安全处理</h3>
+          <p data-i18n="safety.s3.desc">复制时保留目录链接结构，删除时只删链接不删目标数据</p>
         </div>
-        <div class="safety-item">
-          <span class="safety-num">4</span>
-          <div>
-            <h3 data-i18n="safety.s4.title">唯一副本保护</h3>
-            <p data-i18n="safety.s4.desc">源文件删除后，目标数据是唯一副本，任何失败都不删除</p>
-          </div>
+        <div class="safety-card">
+          <div class="safety-num">04</div>
+          <h3 data-i18n="safety.s4.title">唯一副本保护</h3>
+          <p data-i18n="safety.s4.desc">源文件删除后，目标数据是唯一副本，任何失败都不删除</p>
         </div>
-        <div class="safety-item">
-          <span class="safety-num">5</span>
-          <div>
-            <h3 data-i18n="safety.s5.title">自动修复差异</h3>
-            <p data-i18n="safety.s5.desc">搬家期间文件被修改时，自动同步差异文件并重新校验</p>
-          </div>
+        <div class="safety-card">
+          <div class="safety-num">05</div>
+          <h3 data-i18n="safety.s5.title">自动修复差异</h3>
+          <p data-i18n="safety.s5.desc">搬家期间文件被修改时，自动同步差异文件并重新校验</p>
         </div>
       </div>
     </div>
@@ -476,8 +532,8 @@
           </ul>
         </div>
       </div>
-      <div style="text-align:center;margin-top:28px;padding:20px;background:var(--primary-bg);border-radius:12px;max-width:600px;margin-left:auto;margin-right:auto;">
-        <p style="font-size:0.92rem;color:var(--gray-700);" data-i18n="notice.tip"><strong>不确定能不能迁移？</strong> 最简单的方式是问 AI，比如"XXX 软件安装目录可以用符号链接迁移到其他盘吗？"</p>
+      <div class="notice-tip">
+        <p data-i18n="notice.tip"><strong>不确定能不能迁移？</strong> 最简单的方式是问 AI，比如"XXX 软件安装目录可以用符号链接迁移到其他盘吗？"</p>
       </div>
     </div>
   </section>
@@ -505,6 +561,7 @@
         'hero.title': 'CDiskLinker',
         'hero.desc': 'C 盘又红了？把占空间的大文件夹安全搬到其他盘，搬家后软件照样正常打开，不需要重装',
         'hero.download': '免费下载',
+        'hero.github': '在 GitHub 查看',
         'features.title': '为什么选择 CDiskLinker',
         'features.desc': '专为 C 盘空间焦虑设计，搬家过程零文件丢失，搬家后软件无感知',
         'features.f1.title': '零文件丢失',
@@ -560,6 +617,7 @@
         'hero.title': 'CDiskLinker',
         'hero.desc': 'C drive full? Safely move large folders to another drive — your apps keep working from the original path, no reinstall needed',
         'hero.download': 'Download Free',
+        'hero.github': 'View on GitHub',
         'features.title': 'Why CDiskLinker',
         'features.desc': 'Built for C drive space anxiety. Zero data loss during migration, fully transparent to your apps',
         'features.f1.title': 'Zero Data Loss',
