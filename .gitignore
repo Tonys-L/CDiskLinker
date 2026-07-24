@@ -30,6 +30,17 @@ components.d.ts
 pending_jobs.json
 manifest_*.json
 
+# Legacy Slint UI (replaced by Vue 3 frontend)
+ui/
+ui-design/
+
+# Legacy Rust build artifacts at root (now under src-tauri/)
+/app.manifest
+/resources.rc
+
+# Default Vue template
+src/components/HelloWorld.vue
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
