@@ -35,3 +35,4 @@ jobs:
           releaseName: 'CDiskLinker ${{ github.ref_name }}'
           releaseDraft: false
           prerelease: false
+          args: --target x86_64-pc-windows-msvc
