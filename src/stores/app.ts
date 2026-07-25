@@ -43,7 +43,7 @@ export interface LockProcess {
   name: string
 }
 
-export type MigrationStatus = 'Idle' | 'Scanning' | 'Copying' | 'RollingBack' | 'Completed'
+export type MigrationStatus = 'Idle' | 'Scanning' | 'Copying' | 'RollingBack' | 'Completed' | 'PendingConfirmation'
 
 // 将字节数格式化为人类可读大小（KB/MB/GB）
 function formatSize(bytes: number): string {
@@ -86,6 +86,11 @@ export const useAppStore = defineStore('app', () => {
   const warningPaths = ref<string[]>([])
   const crashRecoveryMsg = ref('')
   const scanDetail = ref('')
+  // 迁移确认对话框：Linked 状态下提示用户测试软件
+  const showConfirmDialog = ref(false)
+  const confirmSourcePath = ref('')
+  const confirmOldPath = ref('')
+  const confirmTargetPath = ref('')
   // 内部暂存：占用检测通过后需要继续迁移的路径，以及被占用的路径列表
   let pendingMigrationPaths: string[] = []
   let lockedPaths: string[] = []
@@ -318,6 +323,36 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  // 用户确认迁移正常，删除旧源目录
+  async function confirmAndDeleteSource() {
+    try {
+      migrationStatus.value = 'Copying'
+      await invoke('confirm_delete_source', { path: confirmSourcePath.value })
+      showConfirmDialog.value = false
+      migrationStatus.value = 'Idle'
+      addLog('success', '旧源目录已删除，迁移完全完成！')
+      refreshDiskInfo()
+    } catch (e) {
+      migrationStatus.value = 'PendingConfirmation'
+      addLog('error', `删除旧源失败: ${e}`, 'log.confirmDeleteFailed', { error: String(e) })
+    }
+  }
+
+  // 即时回滚（秒级，无需数据拷贝）
+  async function instantRollback() {
+    try {
+      migrationStatus.value = 'RollingBack'
+      await invoke('rollback_migration_instant', { path: confirmSourcePath.value })
+      showConfirmDialog.value = false
+      migrationStatus.value = 'Idle'
+      addLog('success', '迁移已回滚，目录已恢复原状')
+      refreshDiskInfo()
+    } catch (e) {
+      migrationStatus.value = 'PendingConfirmation'
+      addLog('error', `回滚失败: ${e}`, 'log.instantRollbackFailed', { error: String(e) })
+    }
+  }
+
   function addLog(
     level: LogEntry['level'],
     message: string,
@@ -429,6 +464,14 @@ export const useAppStore = defineStore('app', () => {
         lastLogDetail = detail
         lastLogStage = stage
       }
+      // 检测 PendingConfirmation 阶段：迁移完成，等待用户确认
+      if (stage === 'PendingConfirmation') {
+        migrationStatus.value = 'PendingConfirmation'
+        confirmSourcePath.value = data.source_path || ''
+        confirmOldPath.value = data.renamed_source_path || ''
+        confirmTargetPath.value = data.final_target_path || ''
+        showConfirmDialog.value = true
+      }
     })
 
     // 迁移完成
@@ -474,6 +517,7 @@ export const useAppStore = defineStore('app', () => {
     lockingProcesses, showLockDialog,
     logs, showWarningDialog, warningPaths, crashRecoveryMsg,
     scanDetail,
+    showConfirmDialog, confirmSourcePath, confirmOldPath, confirmTargetPath,
     selectedNodes, selectedSafeNodes, selectedWarningNodes,
     totalSelectedSize, canMigrate,
     formatSize,
@@ -481,6 +525,7 @@ export const useAppStore = defineStore('app', () => {
     toggleNodeExpand, toggleNodeSelect,
     startMigration, doMigration, checkCrashRecovery, rollbackJournal,
     killLockingProcessesAndContinue, cancelMigrationDueToLocks,
+    confirmAndDeleteSource, instantRollback,
     addLog, setupListeners,
   }
 })

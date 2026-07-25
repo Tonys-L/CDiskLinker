@@ -106,6 +106,38 @@
         </div>
       </template>
     </n-modal>
+
+    <!-- 迁移确认对话框：Linked 状态下提示用户测试软件 -->
+    <n-modal
+      :show="store.showConfirmDialog"
+      preset="card"
+      :title="t('migration.confirmTitle')"
+      style="width: 520px; max-width: 90vw;"
+      :mask-closable="false"
+      :close-on-esc="false"
+    >
+      <div class="confirm-dialog-body">
+        <div class="confirm-icon">&#10003;</div>
+        <p class="confirm-tip">{{ t('migration.confirmTip') }}</p>
+        <div class="confirm-info">
+          <div class="confirm-info-row">
+            <span class="confirm-info-label">{{ t('migration.confirmSource') }}</span>
+            <span class="confirm-info-value">{{ store.confirmSourcePath }}</span>
+          </div>
+          <div class="confirm-info-row">
+            <span class="confirm-info-label">{{ t('migration.confirmTarget') }}</span>
+            <span class="confirm-info-value">{{ store.confirmTargetPath }}</span>
+          </div>
+        </div>
+        <p class="confirm-warning">{{ t('migration.confirmWarning') }}</p>
+      </div>
+      <template #footer>
+        <div class="confirm-dialog-footer">
+          <n-button type="warning" @click="store.instantRollback()">{{ t('migration.confirmRollback') }}</n-button>
+          <n-button type="primary" @click="store.confirmAndDeleteSource()">{{ t('migration.confirmDelete') }}</n-button>
+        </div>
+      </template>
+    </n-modal>
   </div>
 </template>
 
@@ -130,9 +162,9 @@ const STAGE_I18N_KEYS: Record<string, string> = {
   PreScanned: 'migration.stages.PreScanned',
   Copying: 'migration.stages.Copying',
   Verifying: 'migration.stages.Verifying',
-  Deleting: 'migration.stages.Deleting',
   Renaming: 'migration.stages.Renaming',
   Linking: 'migration.stages.Linking',
+  PendingConfirmation: 'migration.stages.PendingConfirmation',
   Done: 'migration.stages.Done',
   RollingBack: 'migration.stages.RollingBack',
   Idle: 'migration.stages.Idle',
@@ -338,6 +370,68 @@ function formatSize(bytes: number): string {
 }
 
 .lock-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.confirm-dialog-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.confirm-icon {
+  font-size: 40px;
+  color: var(--success, #51cf66);
+  line-height: 1;
+}
+
+.confirm-tip {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.confirm-info {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  background: var(--bg-tertiary, #243447);
+  border-radius: 6px;
+}
+
+.confirm-info-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  gap: 8px;
+}
+
+.confirm-info-label {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.confirm-info-value {
+  color: var(--text-primary);
+  font-weight: 600;
+  word-break: break-all;
+  text-align: right;
+}
+
+.confirm-warning {
+  margin: 0;
+  font-size: 12px;
+  color: var(--warning, #ffd43b);
+}
+
+.confirm-dialog-footer {
   display: flex;
   justify-content: flex-end;
   gap: 8px;

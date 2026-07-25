@@ -30,6 +30,8 @@ pub fn run() {
             commands::check_crash_recovery,
             commands::check_file_locks,
             commands::kill_locking_processes,
+            commands::confirm_delete_source,
+            commands::rollback_migration_instant,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

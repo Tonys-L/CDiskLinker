@@ -437,6 +437,13 @@
           <h3 data-i18n="features.f4.title">精准占用检测</h3>
           <p data-i18n="features.f4.desc">迁移前检测文件是否被占用，删除失败时告诉你哪个文件被哪个进程占着</p>
         </div>
+        <div class="feature-card">
+          <div class="feature-icon" style="background:var(--green-bg);color:var(--green);">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+          </div>
+          <h3 data-i18n="features.f5.title">一键即时回滚</h3>
+          <p data-i18n="features.f5.desc">迁移后软件异常？点一下回滚，秒级恢复原状，无需重新拷贝数据</p>
+        </div>
       </div>
     </div>
   </section>
@@ -444,8 +451,8 @@
   <!-- How it works -->
   <section>
     <div class="container">
-      <h2 class="section-title" data-i18n="steps.title">搬家只需 4 步</h2>
-      <p class="section-desc" data-i18n="steps.desc">全程自动，你只需选择搬哪个文件夹、搬到哪个盘</p>
+      <h2 class="section-title" data-i18n="steps.title">搬家只需 5 步</h2>
+      <p class="section-desc" data-i18n="steps.desc">全程自动，你只需选择搬哪个文件夹、搬到哪个盘，迁移后确认即可</p>
       <div class="steps">
         <div class="step">
           <span class="step-num">1</span>
@@ -461,14 +468,20 @@
         <div class="step-arrow">&rarr;</div>
         <div class="step">
           <span class="step-num">3</span>
-          <h3 data-i18n="steps.s3.title">删除源文件</h3>
-          <p data-i18n="steps.s3.desc">校验通过后才删除 C 盘原文件</p>
+          <h3 data-i18n="steps.s3.title">创建链接</h3>
+          <p data-i18n="steps.s3.desc">重命名源目录后在原位置建链接</p>
         </div>
         <div class="step-arrow">&rarr;</div>
         <div class="step">
           <span class="step-num">4</span>
-          <h3 data-i18n="steps.s4.title">创建链接</h3>
-          <p data-i18n="steps.s4.desc">在原位置建链接，软件正常使用</p>
+          <h3 data-i18n="steps.s4.title">测试确认</h3>
+          <p data-i18n="steps.s4.desc">打开软件测试正常后确认完成</p>
+        </div>
+        <div class="step-arrow">&rarr;</div>
+        <div class="step">
+          <span class="step-num">5</span>
+          <h3 data-i18n="steps.s5.title">清理旧文件</h3>
+          <p data-i18n="steps.s5.desc">确认后自动删除旧源释放空间</p>
         </div>
       </div>
     </div>
@@ -477,33 +490,48 @@
   <!-- Safety -->
   <section>
     <div class="container">
-      <h2 class="section-title" data-i18n="safety.title">五重安全保障</h2>
+      <h2 class="section-title" data-i18n="safety.title">多重安全保障</h2>
       <p class="section-desc" data-i18n="safety.desc">你的数据安全是底线，任何步骤出问题都不会丢文件</p>
       <div class="safety-grid">
         <div class="safety-card">
           <div class="safety-num">01</div>
           <h3 data-i18n="safety.s1.title">逐文件 SHA256 校验</h3>
-          <p data-i18n="safety.s1.desc">每个文件搬家前后路径、大小、内容哈希必须完全一致，否则不删源</p>
+          <p data-i18n="safety.s1.desc">每个文件搬家前后路径、大小、内容哈希必须完全一致，否则保留源</p>
         </div>
         <div class="safety-card">
           <div class="safety-num">02</div>
-          <h3 data-i18n="safety.s2.title">文件占用检测</h3>
-          <p data-i18n="safety.s2.desc">搬家前检测文件是否被占用，精确定位到具体文件和进程</p>
+          <h3 data-i18n="safety.s2.title">先重命名再建链</h3>
+          <p data-i18n="safety.s2.desc">源目录仅重命名而非删除，原始数据始终完好直到你确认</p>
         </div>
         <div class="safety-card">
           <div class="safety-num">03</div>
-          <h3 data-i18n="safety.s3.title">链接安全处理</h3>
-          <p data-i18n="safety.s3.desc">复制时保留目录链接结构，删除时只删链接不删目标数据</p>
+          <h3 data-i18n="safety.s3.title">迁移后确认机制</h3>
+          <p data-i18n="safety.s3.desc">迁移后需测试软件是否正常，确认后才删除旧源文件，异常可一键回滚</p>
         </div>
         <div class="safety-card">
           <div class="safety-num">04</div>
-          <h3 data-i18n="safety.s4.title">唯一副本保护</h3>
-          <p data-i18n="safety.s4.desc">源文件删除后，目标数据是唯一副本，任何失败都不删除</p>
+          <h3 data-i18n="safety.s4.title">即时回滚</h3>
+          <p data-i18n="safety.s4.desc">迁移后软件异常？点一下回滚秒级恢复原状，无需重新拷贝数据</p>
         </div>
         <div class="safety-card">
           <div class="safety-num">05</div>
-          <h3 data-i18n="safety.s5.title">自动修复差异</h3>
-          <p data-i18n="safety.s5.desc">搬家期间文件被修改时，自动同步差异文件并重新校验</p>
+          <h3 data-i18n="safety.s5.title">文件占用检测</h3>
+          <p data-i18n="safety.s5.desc">搬家前检测文件是否被占用，精确定位到具体文件和进程</p>
+        </div>
+        <div class="safety-card">
+          <div class="safety-num">06</div>
+          <h3 data-i18n="safety.s6.title">链接安全处理</h3>
+          <p data-i18n="safety.s6.desc">复制时保留目录链接结构，删除时只删链接不删目标数据</p>
+        </div>
+        <div class="safety-card">
+          <div class="safety-num">07</div>
+          <h3 data-i18n="safety.s7.title">唯一副本保护</h3>
+          <p data-i18n="safety.s7.desc">旧源文件删除后，目标数据是唯一副本，任何失败都不删除</p>
+        </div>
+        <div class="safety-card">
+          <div class="safety-num">08</div>
+          <h3 data-i18n="safety.s8.title">自动修复差异</h3>
+          <p data-i18n="safety.s8.desc">搬家期间文件被修改时，自动同步差异文件并重新校验</p>
         </div>
       </div>
     </div>
@@ -574,28 +602,38 @@
         'features.f3.desc': '意外关机、崩溃后重新打开工具，自动恢复到断点继续，数据不会丢',
         'features.f4.title': '精准占用检测',
         'features.f4.desc': '迁移前检测文件是否被占用，删除失败时告诉你哪个文件被哪个进程占着',
-        'steps.title': '搬家只需 4 步',
-        'steps.desc': '全程自动，你只需选择搬哪个文件夹、搬到哪个盘',
+        'features.f5.title': '一键即时回滚',
+        'features.f5.desc': '迁移后软件异常？点一下回滚，秒级恢复原状，无需重新拷贝数据',
+        'steps.title': '搬家只需 5 步',
+        'steps.desc': '全程自动，你只需选择搬哪个文件夹、搬到哪个盘，迁移后确认即可',
         'steps.s1.title': '选择目录',
         'steps.s1.desc': '选 C 盘里占空间的文件夹',
         'steps.s2.title': '安全复制',
         'steps.s2.desc': '复制到目标盘并逐文件校验',
-        'steps.s3.title': '删除源文件',
-        'steps.s3.desc': '校验通过后才删除 C 盘原文件',
-        'steps.s4.title': '创建链接',
-        'steps.s4.desc': '在原位置建链接，软件正常使用',
-        'safety.title': '五重安全保障',
+        'steps.s3.title': '创建链接',
+        'steps.s3.desc': '重命名源目录后在原位置建链接',
+        'steps.s4.title': '测试确认',
+        'steps.s4.desc': '打开软件测试正常后确认完成',
+        'steps.s5.title': '清理旧文件',
+        'steps.s5.desc': '确认后自动删除旧源释放空间',
+        'safety.title': '多重安全保障',
         'safety.desc': '你的数据安全是底线，任何步骤出问题都不会丢文件',
         'safety.s1.title': '逐文件 SHA256 校验',
-        'safety.s1.desc': '每个文件搬家前后路径、大小、内容哈希必须完全一致，否则不删源',
-        'safety.s2.title': '文件占用检测',
-        'safety.s2.desc': '搬家前检测文件是否被占用，精确定位到具体文件和进程',
-        'safety.s3.title': '链接安全处理',
-        'safety.s3.desc': '复制时保留目录链接结构，删除时只删链接不删目标数据',
-        'safety.s4.title': '唯一副本保护',
-        'safety.s4.desc': '源文件删除后，目标数据是唯一副本，任何失败都不删除',
-        'safety.s5.title': '自动修复差异',
-        'safety.s5.desc': '搬家期间文件被修改时，自动同步差异文件并重新校验',
+        'safety.s1.desc': '每个文件搬家前后路径、大小、内容哈希必须完全一致，否则保留源',
+        'safety.s2.title': '先重命名再建链',
+        'safety.s2.desc': '源目录仅重命名而非删除，原始数据始终完好直到你确认',
+        'safety.s3.title': '迁移后确认机制',
+        'safety.s3.desc': '迁移后需测试软件是否正常，确认后才删除旧源文件，异常可一键回滚',
+        'safety.s4.title': '即时回滚',
+        'safety.s4.desc': '迁移后软件异常？点一下回滚秒级恢复原状，无需重新拷贝数据',
+        'safety.s5.title': '文件占用检测',
+        'safety.s5.desc': '搬家前检测文件是否被占用，精确定位到具体文件和进程',
+        'safety.s6.title': '链接安全处理',
+        'safety.s6.desc': '复制时保留目录链接结构，删除时只删链接不删目标数据',
+        'safety.s7.title': '唯一副本保护',
+        'safety.s7.desc': '旧源文件删除后，目标数据是唯一副本，任何失败都不删除',
+        'safety.s8.title': '自动修复差异',
+        'safety.s8.desc': '搬家期间文件被修改时，自动同步差异文件并重新校验',
         'notice.title': '使用须知',
         'notice.desc': '了解哪些目录可以搬、哪些要注意，让搬家更安心',
         'notice.safe.title': '通常可以安全迁移',
@@ -630,28 +668,38 @@
         'features.f3.desc': 'Power outage or crash? Reopen the tool and it resumes from the last checkpoint — no data loss',
         'features.f4.title': 'Precise Lock Detection',
         'features.f4.desc': 'Scans for file locks before migration. On failure, tells you exactly which file is held by which process',
-        'steps.title': 'Migration in 4 Steps',
-        'steps.desc': 'Fully automatic — just pick the folder and the target drive',
+        'features.f5.title': 'Instant Rollback',
+        'features.f5.desc': 'App broken after migration? One-click rollback restores the original state in seconds — no data copy needed',
+        'steps.title': 'Migration in 5 Steps',
+        'steps.desc': 'Fully automatic — just pick the folder and the target drive, then confirm after migration',
         'steps.s1.title': 'Select Folder',
         'steps.s1.desc': 'Pick the space-hogging folder on C drive',
         'steps.s2.title': 'Safe Copy',
         'steps.s2.desc': 'Copy to target drive with per-file verification',
-        'steps.s3.title': 'Delete Source',
-        'steps.s3.desc': 'Delete original C drive files only after verification passes',
-        'steps.s4.title': 'Create Junction',
-        'steps.s4.desc': 'Link at the original location — apps work as usual',
-        'safety.title': 'Five-Layer Safety Guarantee',
+        'steps.s3.title': 'Create Junction',
+        'steps.s3.desc': 'Rename source, then create junction at original location',
+        'steps.s4.title': 'Test & Confirm',
+        'steps.s4.desc': 'Test the app and confirm everything works',
+        'steps.s5.title': 'Cleanup',
+        'steps.s5.desc': 'Old source deleted automatically after confirmation',
+        'safety.title': 'Multi-Layer Safety Guarantee',
         'safety.desc': 'Data safety is the bottom line — no step failure will lose your files',
         'safety.s1.title': 'Per-File SHA256 Verification',
-        'safety.s1.desc': 'Every file\'s path, size, and content hash must match exactly before source deletion',
-        'safety.s2.title': 'File Lock Detection',
-        'safety.s2.desc': 'Scans for file locks before migration, pinpointing the exact file and process',
-        'safety.s3.title': 'Junction Safety',
-        'safety.s3.desc': 'Preserves junction structure during copy; deletes only the junction, never target data',
-        'safety.s4.title': 'Single-Copy Protection',
-        'safety.s4.desc': 'After source deletion, the target is the only copy — no failure will delete it',
-        'safety.s5.title': 'Auto Repair',
-        'safety.s5.desc': 'When source files are modified during migration, differences are synced and re-verified automatically',
+        'safety.s1.desc': 'Every file\'s path, size, and content hash must match exactly before any irreversible operation',
+        'safety.s2.title': 'Rename-First',
+        'safety.s2.desc': 'Source directory is renamed (not deleted) before creating junction — original data stays intact until you confirm',
+        'safety.s3.title': 'User Confirmation',
+        'safety.s3.desc': 'After migration, test the app and confirm it works before old source is deleted, or rollback instantly',
+        'safety.s4.title': 'Instant Rollback',
+        'safety.s4.desc': 'App broken after migration? Click rollback to restore original state in seconds — no data copy needed',
+        'safety.s5.title': 'File Lock Detection',
+        'safety.s5.desc': 'Scans for file locks before migration, pinpointing the exact file and process',
+        'safety.s6.title': 'Junction Safety',
+        'safety.s6.desc': 'Preserves junction structure during copy; deletes only the junction, never target data',
+        'safety.s7.title': 'Single-Copy Protection',
+        'safety.s7.desc': 'After old source deletion, the target is the only copy — no failure will delete it',
+        'safety.s8.title': 'Auto Repair',
+        'safety.s8.desc': 'When source files are modified during migration, differences are synced and re-verified automatically',
         'notice.title': 'Important Notes',
         'notice.desc': 'Know what can be migrated and what to watch out for',
         'notice.safe.title': 'Usually Safe to Migrate',

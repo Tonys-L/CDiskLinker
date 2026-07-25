@@ -70,9 +70,9 @@ export default {
       PreScanned: '统计完成',
       Copying: '复制中',
       Verifying: '校验中',
-      Deleting: '删除源目录',
       Renaming: '重命名',
       Linking: '创建链接',
+      PendingConfirmation: '等待确认',
       Done: '完成',
       RollingBack: '回滚中',
       Idle: '待机',
@@ -90,6 +90,13 @@ export default {
     warningNegative: '取消',
     warningBody: '以下目录属于配置数据区，迁移后可能导致相关软件配置丢失：',
     warningConfirm: '确认迁移请点击"确认迁移"，这些目录的数据将被物理移至目标盘并建立联接。',
+    confirmTitle: '迁移完成，请确认',
+    confirmTip: '迁移已完成！请先打开软件测试是否正常使用，确认正常后再删除旧文件。',
+    confirmSource: '原路径',
+    confirmTarget: '迁移到',
+    confirmWarning: '旧文件仍保留在 C 盘占用空间，确认正常后请点击删除，异常请点击回滚。',
+    confirmDelete: '确认正常，删除旧文件',
+    confirmRollback: '软件异常，回滚迁移',
   },
   journal: {
     title: '上次运行异常中断',
@@ -119,6 +126,8 @@ export default {
     migrateFailedShort: '迁移失败',
     migrateAllDone: '全部迁移完成！',
     migrateItemFailed: '迁移失败 [{path}]: {error}',
+    confirmDeleteFailed: '删除旧源失败: {error}',
+    instantRollbackFailed: '回滚失败: {error}',
     // 后端进度 detail 透传：detail 为后端原文，直接展示（无 i18n key 时回退到原 message）
   },
 }

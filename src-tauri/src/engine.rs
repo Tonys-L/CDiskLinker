@@ -23,6 +23,13 @@ pub struct MigrationProgress {
     pub copied_size: u64,
     pub current_file: String,
     pub detail: String,
+    /// 以下字段仅在 PendingConfirmation 阶段填充，用于前端确认对话框
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub renamed_source_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_target_path: Option<String>,
 }
 
 impl MigrationProgress {
@@ -36,6 +43,29 @@ impl MigrationProgress {
             copied_size: 0,
             current_file: String::new(),
             detail: detail.to_string(),
+            source_path: None,
+            renamed_source_path: None,
+            final_target_path: None,
+        }
+    }
+
+    /// 创建带进度的 MigrationProgress（不含确认对话框字段）
+    fn with_progress(stage: &str, progress: f32, detail: &str,
+                     total_files: usize, copied_files: usize,
+                     total_size: u64, copied_size: u64,
+                     current_file: &str) -> Self {
+        Self {
+            stage: stage.to_string(),
+            progress,
+            total_files,
+            copied_files,
+            total_size,
+            copied_size,
+            current_file: current_file.to_string(),
+            detail: detail.to_string(),
+            source_path: None,
+            renamed_source_path: None,
+            final_target_path: None,
         }
     }
 }
@@ -44,7 +74,7 @@ impl MigrationProgress {
 pub fn get_disk_free_space(drive: &str) -> Result<u64, String> {
     let drive_w = U16CString::from_str(drive)
         .map_err(|e| format!("驱动器路径编码失败: {}", e))?;
-    
+
     let mut free_bytes_available = 0u64;
     let mut total_number_of_bytes = 0u64;
     let mut total_number_of_free_bytes = 0u64;
@@ -56,7 +86,7 @@ pub fn get_disk_free_space(drive: &str) -> Result<u64, String> {
             Some(&mut total_number_of_bytes),
             Some(&mut total_number_of_free_bytes),
         );
-        
+
         if result.is_ok() {
             Ok(free_bytes_available)
         } else {
@@ -579,6 +609,9 @@ fn copy_dir_recursive(
                                 copied_size: *copied_bytes,
                                 current_file: String::new(),
                                 detail: format!("重建联接: {} -> {:?}", rel, junction_target),
+                                source_path: None,
+                                renamed_source_path: None,
+                                final_target_path: None,
                             });
                         }
                         Err(e) => {
@@ -637,6 +670,9 @@ fn copy_dir_recursive(
                                 copied_size: *copied_bytes,
                                 current_file: file_name.clone(),
                                 detail: format!("复制中: {} ({}/{})", file_name, *copied_files + 1, total_files),
+                                source_path: None,
+                                renamed_source_path: None,
+                                final_target_path: None,
                             });
                             last_send = Instant::now();
                         }
@@ -659,6 +695,9 @@ fn copy_dir_recursive(
                         copied_size: *copied_bytes,
                         current_file: file_name.clone(),
                         detail: format!("已复制: {} ({}/{})", file_name, *copied_files, total_files),
+                        source_path: None,
+                        renamed_source_path: None,
+                        final_target_path: None,
                     });
                     last_send = Instant::now();
                 }
@@ -669,7 +708,13 @@ fn copy_dir_recursive(
     Ok(())
 }
 
-/// 执行双阶段物理迁移
+/// 构造源目录的 _cdisklinker_old 重命名路径
+/// 例如 C:\Steam → C:\Steam._cdisklinker_old
+fn make_old_path(source_dir: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.{}", source_dir.display(), "_cdisklinker_old"))
+}
+
+/// 执行双阶段物理迁移（V2：先重命名源→建链接→用户确认→删旧源）
 pub fn execute_migration(
     entry: &ScanEntry,
     target_drive: &str,
@@ -677,13 +722,19 @@ pub fn execute_migration(
 ) -> Result<(), String> {
     let source_dir = &entry.path;
 
-    // 0. 检测同源 Copied 状态恢复（删除失败后重试）
-    //    如果存在同源的 Copied 日志，说明拷贝+校验已完成，仅删除步骤失败，
-    //    跳过拷贝直接从删除步骤继续，避免重复拷贝
+    // 0. 检测同源 Copied/Finalized 状态恢复
+    //    如果存在同源的 Copied 日志，说明拷贝+校验已完成，
+    //    跳过拷贝直接从后续步骤继续，避免重复拷贝
     if let Ok(Some(existing_job)) = journal::read_job() {
-        if existing_job.source_path == *source_dir && existing_job.stage == MigrationStage::Copied {
-            let _ = tx.send(MigrationProgress::new("Resuming", 90.0, "检测到上次拷贝已完成，正在恢复迁移（跳过拷贝，直接删除源）..."));
-            return resume_migration_from_copied(existing_job, &tx);
+        if existing_job.source_path == *source_dir {
+            match existing_job.stage {
+                MigrationStage::Copied | MigrationStage::Finalized => {
+                    let _ = tx.send(MigrationProgress::new("Resuming", 90.0,
+                        "检测到上次拷贝已完成，正在恢复迁移（跳过拷贝，从重命名步骤继续）..."));
+                    return resume_migration_from_copied(existing_job, &tx);
+                }
+                _ => {}
+            }
         }
     }
 
@@ -692,15 +743,15 @@ pub fn execute_migration(
     if !source_dir.exists() {
         return Err(format!("源目录不存在: {:?}", source_dir));
     }
-    // 0b. 源路径必须是目录
+    // 1b. 源路径必须是目录
     if !source_dir.is_dir() {
         return Err(format!("源路径不是目录: {:?}", source_dir));
     }
-    // 0c. 源目录不能是 Junction（已迁移过的目录）
+    // 1c. 源目录不能是 Junction（已迁移过的目录）
     if win_util::is_junction(source_dir) {
         return Err(format!("源目录已是 NTFS 联接（可能已迁移过）: {:?}", source_dir));
     }
-    // 0d. 目标路径不能与源路径在同一盘
+    // 1d. 目标路径不能与源路径在同一盘
     let source_drive = source_dir.to_str()
         .and_then(|s| s.get(..2))
         .unwrap_or("");
@@ -708,11 +759,11 @@ pub fn execute_migration(
     if source_drive.eq_ignore_ascii_case(target_drive_letter) {
         return Err("目标路径与源路径在同一磁盘，无需跨盘迁移".to_string());
     }
-    // 0e. 源路径不能是盘符根目录（file_name() 为空会导致目标目录名异常）
+    // 1e. 源路径不能是盘符根目录（file_name() 为空会导致目标目录名异常）
     if source_dir.file_name().is_none() {
         return Err(format!("源路径不能是盘符根目录: {:?}", source_dir));
     }
-    // 0f. 目标盘文件系统必须是 NTFS（Junction 仅 NTFS 支持，FAT32/exFAT/网络盘会失败）
+    // 1f. 目标盘文件系统必须是 NTFS（Junction 仅 NTFS 支持，FAT32/exFAT/网络盘会失败）
     let target_drive_root = if target_drive.len() >= 3 {
         format!("{}\\", &target_drive[..2])
     } else {
@@ -728,7 +779,16 @@ pub fn execute_migration(
         }
     }
 
-    // 1. 获取目标磁盘盘符的可用空间，校验是否满足业务不变量 INV-002
+    // 1g. _cdisklinker_old 路径不能已存在（避免重命名冲突）
+    let old_source_path = make_old_path(source_dir);
+    if old_source_path.exists() {
+        return Err(format!(
+            "源目录的旧备份路径已存在 {:?}，请先手动删除或重命名后重试",
+            old_source_path
+        ));
+    }
+
+    // 2. 获取目标磁盘盘符的可用空间，校验是否满足业务不变量 INV-002
     let drive_root = if target_drive.len() >= 3 {
         &target_drive[..3]
     } else {
@@ -738,7 +798,7 @@ pub fn execute_migration(
     let free_space = get_disk_free_space(drive_root)
         .map_err(|e| format!("无法获取目标盘空间信息（盘符可能无效）: {}", e))?;
 
-    // 2. 【预统计】递归统计源目录文件数量和总大小
+    // 3. 【预统计】递归统计源目录文件数量和总大小
     let _ = tx.send(MigrationProgress::new("PreScanning", 1.0, "正在预统计源目录文件..."));
     let (total_files, total_size) = pre_scan_migration(source_dir)?;
 
@@ -755,6 +815,9 @@ pub fn execute_migration(
         copied_size: 0,
         current_file: String::new(),
         detail: format!("预统计完成: {} 个文件, 总计 {}", total_files, crate::scanner::format_size(total_size)),
+        source_path: None,
+        renamed_source_path: None,
+        final_target_path: None,
     });
 
     let required_space = total_size;
@@ -768,7 +831,7 @@ pub fn execute_migration(
         ));
     }
 
-    // 3. 构造目标路径和临时路径
+    // 4. 构造目标路径和临时路径
     let target_base_dir = Path::new(target_drive);
     let final_target_path = target_base_dir.join(&entry.name);
 
@@ -782,7 +845,7 @@ pub fn execute_migration(
         let _ = remove_dir_all_with_detail(&target_tmp_path);
     }
 
-    // 4. 【生成源端 Manifest 并持久化】删除源之前的权威清单
+    // 5. 【生成源端 Manifest 并持久化】删除源之前的权威清单
     //    崩溃恢复时用此清单校验目标完整性（即使源已删也能校验）
     let _ = tx.send(MigrationProgress::new("PreScanning", 7.0, "正在生成源端文件清单(SHA256)..."));
     let source_manifest = Manifest::generate(source_dir)?;
@@ -791,7 +854,7 @@ pub fn execute_migration(
     let manifest_path = journal::get_journal_dir()?.join(format!("manifest_{}.json", uuid_v4_like()));
     source_manifest.save_to_file(&manifest_path)?;
 
-    // 5. 注册并写入待办事务日志 (Stage = Initiated，含 manifest 路径)
+    // 6. 注册并写入待办事务日志 (Stage = Initiated，含 manifest 路径)
     //    原子顺序：先写 Manifest → 再写日志。崩溃时若日志有 Initiated 但无 Manifest，视为步骤1前崩溃
     let job = PendingJob {
         job_id: uuid_v4_like(),
@@ -800,6 +863,7 @@ pub fn execute_migration(
         final_target_path: final_target_path.clone(),
         stage: MigrationStage::Initiated,
         manifest_path: Some(manifest_path.clone()),
+        renamed_source_path: None,
     };
     journal::write_job(&job)?;
 
@@ -812,9 +876,12 @@ pub fn execute_migration(
         copied_size: 0,
         current_file: String::new(),
         detail: "开始物理复制文件流...".to_string(),
+        source_path: None,
+        renamed_source_path: None,
+        final_target_path: None,
     });
 
-    // 6. 执行第一阶段：物理复制数据流并发送进度
+    // 7. 执行第一阶段：物理复制数据流并发送进度
     let mut copied_bytes = 0u64;
     let mut copied_files = 0usize;
     let copy_result = copy_dir_recursive(
@@ -835,7 +902,7 @@ pub fn execute_migration(
         return Err(format!("文件拷贝流遇到异常终止: {}", e));
     }
 
-    // 7. 【Manifest 逐项校验】生成目标端 Manifest，与源端逐项比对
+    // 8. 【Manifest 逐项校验】生成目标端 Manifest，与源端逐项比对
     //    这是删除源之前的最终防线：每个文件的路径+大小+SHA256 必须完全一致
     let _ = tx.send(MigrationProgress {
         stage: "Verifying".to_string(),
@@ -846,6 +913,9 @@ pub fn execute_migration(
         copied_size: total_size,
         current_file: String::new(),
         detail: "正在校验物理数据完整性与哈希值...".to_string(),
+        source_path: None,
+        renamed_source_path: None,
+        final_target_path: None,
     });
 
     let target_manifest = Manifest::generate(&target_tmp_path)?;
@@ -919,46 +989,45 @@ pub fn execute_migration(
         total_size,
         copied_size: total_size,
         current_file: String::new(),
-        detail: "Manifest 校验通过，准备删除源目录...".to_string(),
+        detail: "Manifest 校验通过，准备激活目标目录...".to_string(),
+        source_path: None,
+        renamed_source_path: None,
+        final_target_path: None,
     });
 
-    // 8. 标记状态至 Copied（拷贝+校验通过，源还在，tmp 完整）
-    //    崩溃恢复：源在 → 删 tmp 保源；源不在 → 保留 tmp 提示用户
+    // 9. 标记状态至 Copied（拷贝+校验通过，源还在，tmp 完整）
     let mut job = job;
     job.stage = MigrationStage::Copied;
     journal::write_job(&job)?;
 
+    // 10. 将临时文件夹重命名为正式目标目录（tmp → final）
     let _ = tx.send(MigrationProgress {
-        stage: "Deleting".to_string(),
-        progress: 95.0,
+        stage: "Renaming".to_string(),
+        progress: 96.0,
         total_files,
         copied_files: total_files,
         total_size,
         copied_size: total_size,
         current_file: String::new(),
-        detail: "校验通过，正在安全删除源目录...".to_string(),
+        detail: "激活重命名目标文件夹目录结构...".to_string(),
+        source_path: None,
+        renamed_source_path: None,
+        final_target_path: None,
     });
 
-    // 9. 物理删除 C 盘源数据（逐个删除，定位失败文件）
-    //    失败处理：保留 tmp + 保留日志（Copied 状态），用户关闭占用进程后重试将从删除步骤继续
-    if let Err((e, failed_path)) = remove_dir_all_with_detail(source_dir) {
-        // 不删 tmp！不清日志！保留 Copied 状态，重试时跳过拷贝直接删除
-        let file_info = failed_path.map(|p| {
-            let rel = p.strip_prefix(source_dir).unwrap_or(&p).to_string_lossy();
-            format!("，失败的文件: {}", rel)
-        }).unwrap_or_default();
-        let lock_info = detect_locks_with_fallback(source_dir);
+    if let Err(e) = fs::rename(&target_tmp_path, &final_target_path) {
+        // rename 失败：源完好，tmp 完整 → 保留 Copied 状态，用户可重试
         return Err(format!(
-            "删除源目录失败: {}{}{}。数据已安全拷贝至临时目录，请关闭占用进程后重新点击迁移，将从删除步骤继续（无需重新拷贝）。",
-            e, file_info, lock_info
+            "重命名目标文件夹失败: {}。源目录完好，数据完整保存在临时目录 {:?}，请重试迁移。",
+            e, target_tmp_path
         ));
     }
 
-    // 9.1 标记状态至 SourceDeleted（源已删，tmp 是唯一完整副本）
-    //     崩溃恢复：tmp 在 → 自动 rename + 建 Junction；tmp 不在 → 数据丢失
-    job.stage = MigrationStage::SourceDeleted;
+    // 10.1 标记状态至 Finalized（tmp 已改名 final，源仍在原位置）
+    job.stage = MigrationStage::Finalized;
     journal::write_job(&job)?;
 
+    // 11. 将源目录重命名为 _cdisklinker_old（腾出原路径用于 Junction）
     let _ = tx.send(MigrationProgress {
         stage: "Renaming".to_string(),
         progress: 97.0,
@@ -967,24 +1036,32 @@ pub fn execute_migration(
         total_size,
         copied_size: total_size,
         current_file: String::new(),
-        detail: "激活重命名目标文件夹目录结构...".to_string(),
+        detail: "正在重命名源目录以腾出原路径...".to_string(),
+        source_path: None,
+        renamed_source_path: None,
+        final_target_path: None,
     });
 
-    // 10. 将临时文件夹正式重命名激活
-    //     失败处理：源已删，tmp 是唯一副本 → 绝不删 tmp！保留 tmp + 保留日志，提示用户手动 rename
-    if let Err(e) = fs::rename(&target_tmp_path, &final_target_path) {
-        // 不删 tmp！不清日志！数据安全保存在 tmp，用户可手动 rename 或重试
+    if let Err(e) = fs::rename(source_dir, &old_source_path) {
+        // 源重命名失败：回滚 - 将 final rename 回 tmp，保持源完整
+        let _ = fs::rename(&final_target_path, &target_tmp_path);
+        // 回退到 Copied 状态
+        job.stage = MigrationStage::Copied;
+        job.target_path = target_tmp_path.clone();
+        let _ = journal::write_job(&job);
+        let lock_info = detect_locks_with_fallback(source_dir);
         return Err(format!(
-            "重命名目标文件夹失败: {}。源目录已删除，数据完整保存在临时目录 {:?}，请手动重命名为 {:?} 后在源位置创建 Junction，或重新运行迁移自动恢复。",
-            e, target_tmp_path, final_target_path
+            "重命名源目录失败: {}{}。源目录完好，请关闭占用程序后重试。",
+            e, lock_info
         ));
     }
 
-    // 10.1 标记状态至 Renamed（tmp 已改名 final，final 是唯一副本，Junction 未建）
-    //      崩溃恢复：final 在 → 自动建 Junction；final 不在 → 异常报错
-    job.stage = MigrationStage::Renamed;
+    // 11.1 标记状态至 SourceRenamed（源已重命名，原路径已腾出，final 是权威副本）
+    job.stage = MigrationStage::SourceRenamed;
+    job.renamed_source_path = Some(old_source_path.clone());
     journal::write_job(&job)?;
 
+    // 12. 建立 NTFS Junction 联接重定向
     let _ = tx.send(MigrationProgress {
         stage: "Linking".to_string(),
         progress: 98.0,
@@ -994,193 +1071,209 @@ pub fn execute_migration(
         copied_size: total_size,
         current_file: String::new(),
         detail: "正在原位置建立重解析点 (NTFS Junction) 重定向...".to_string(),
+        source_path: None,
+        renamed_source_path: None,
+        final_target_path: None,
     });
 
-    // 11. 建立 NTFS Junction 联接重定向
-    //     失败处理：final 在，源已删 → 保留 final，清日志，提示用户手动 mklink
     if let Err(e) = win_util::create_junction(source_dir, &final_target_path) {
-        let _ = journal::clear_job();
+        // Junction 创建失败：回滚 - 删除 Junction 占位（如果已创建部分），rename _old 回原路径
+        // 先尝试把 _old rename 回源路径
+        if fs::rename(&old_source_path, source_dir).is_ok() {
+            // 源恢复成功，final 还在，回退到 Finalized 状态
+            job.stage = MigrationStage::Finalized;
+            job.renamed_source_path = None;
+            let _ = journal::write_job(&job);
+        }
         return Err(format!(
-            "建立 NTFS 目录联接失败: {}。数据已安全迁移至 {:?}，请手动执行 mklink /J \"{:?}\" \"{:?}\" 创建联接。",
+            "建立 NTFS 目录联接失败: {}。数据已安全迁移至 {:?}，源目录已恢复原位，请手动执行 mklink /J \"{:?}\" \"{:?}\" 创建联接后重试。",
             e, final_target_path, source_dir, final_target_path
         ));
     }
 
-    // 11.1 标记状态至 Linked（Junction 已建，迁移实质完成）
+    // 12.1 标记状态至 Linked（Junction 已建，迁移功能上完成，等待用户确认）
     job.stage = MigrationStage::Linked;
     journal::write_job(&job)?;
 
-    let _ = journal::clear_job();
-    // 迁移成功完成，清理 Manifest 文件
-    if let Some(mp) = &job.manifest_path {
-        let _ = fs::remove_file(mp);
-    }
+    // 13. 通知前端：迁移完成，等待用户确认
+    //     不 clear_job！不删除 _old！保持 Linked 状态，等用户确认后再清理
     let _ = tx.send(MigrationProgress {
-        stage: "Done".to_string(),
+        stage: "PendingConfirmation".to_string(),
         progress: 100.0,
         total_files,
         copied_files: total_files,
         total_size,
         copied_size: total_size,
         current_file: String::new(),
-        detail: "迁移完成！C盘空间已安全释放。".to_string(),
+        detail: "迁移已完成！请测试软件是否正常使用".to_string(),
+        source_path: Some(source_dir.to_string_lossy().to_string()),
+        renamed_source_path: old_source_path.to_str().map(|s| s.to_string()),
+        final_target_path: Some(final_target_path.to_string_lossy().to_string()),
     });
 
     Ok(())
 }
 
-/// 从 Copied 状态恢复迁移（删除失败后重试）
+/// 从 Copied/Finalized 状态恢复迁移（重试时跳过拷贝+校验）
 ///
-/// 当删除源目录失败时，保留 Copied 状态日志和 tmp 目录。
-/// 用户关闭占用进程后重新点击迁移，execute_migration 入口检测到同源 Copied 日志，
-/// 调用本函数跳过拷贝+校验，直接从删除步骤继续。
+/// 当删除源目录失败或后续步骤中断时，保留 Copied/Finalized 状态日志和 tmp/final 目录。
+/// 用户重新点击迁移，execute_migration 入口检测到同源 Copied/Finalized 日志，
+/// 调用本函数跳过拷贝+校验，直接从后续步骤继续。
 fn resume_migration_from_copied(
     mut job: PendingJob,
     tx: &Sender<MigrationProgress>,
 ) -> Result<(), String> {
     let source_dir = &job.source_path;
-    let target_tmp_path = &job.target_path;
     let final_target_path = &job.final_target_path;
 
-    // 验证源还在（Copied 状态源应完好）
+    // 验证源还在
     if !source_dir.exists() {
         let _ = journal::clear_job();
         return Err("恢复失败：源目录不存在，无法继续迁移".to_string());
     }
-    // 验证 tmp 还在
-    if !target_tmp_path.exists() {
-        let _ = journal::clear_job();
-        return Err("恢复失败：临时目录不存在，请重新迁移".to_string());
-    }
 
-    // 用持久化的源端 Manifest 校验目标 tmp 完整性
-    // 关键：resume 时源还在，但用持久化 Manifest 校验更权威（防止源被外部修改）
-    let _ = tx.send(MigrationProgress::new("Verifying", 92.0, "恢复迁移：正在用 Manifest 校验已拷贝数据完整性..."));
+    // 根据当前阶段确定 tmp 和 final 的位置
+    let target_tmp_path = &job.target_path;
 
-    let source_manifest = match &job.manifest_path {
-        Some(mp) if mp.exists() => {
-            Manifest::load_from_file(mp).map_err(|e| format!("加载 Manifest 失败: {}", e))?
+    // 如果处于 Copied 状态，先验证 tmp 并 rename 到 final
+    if job.stage == MigrationStage::Copied {
+        // 验证 tmp 还在
+        if !target_tmp_path.exists() {
+            let _ = journal::clear_job();
+            return Err("恢复失败：临时目录不存在，请重新迁移".to_string());
         }
-        _ => {
-            // Manifest 丢失，用源实时生成（降级方案）
-            Manifest::generate(source_dir)?
+
+        // 用持久化的源端 Manifest 校验目标 tmp 完整性
+        let _ = tx.send(MigrationProgress::new("Verifying", 92.0, "恢复迁移：正在用 Manifest 校验已拷贝数据完整性..."));
+
+        let source_manifest = match &job.manifest_path {
+            Some(mp) if mp.exists() => {
+                Manifest::load_from_file(mp).map_err(|e| format!("加载 Manifest 失败: {}", e))?
+            }
+            _ => {
+                // Manifest 丢失，用源实时生成（降级方案）
+                Manifest::generate(source_dir)?
+            }
+        };
+
+        let target_manifest = Manifest::generate(target_tmp_path)?;
+        if let Err(e) = source_manifest.verify_against(&target_manifest) {
+            // tmp 数据不完整或被篡改，清理后要求重新迁移
+            let _ = remove_dir_all_with_detail(target_tmp_path);
+            let _ = journal::clear_job();
+            if let Some(mp) = &job.manifest_path {
+                let _ = fs::remove_file(mp);
+            }
+            return Err(format!("恢复失败：临时目录数据不完整（{}），已清理，请重新迁移", e));
         }
-    };
 
-    let target_manifest = Manifest::generate(target_tmp_path)?;
-    if let Err(e) = source_manifest.verify_against(&target_manifest) {
-        // tmp 数据不完整或被篡改，清理后要求重新迁移
-        let _ = remove_dir_all_with_detail(target_tmp_path);
-        let _ = journal::clear_job();
-        if let Some(mp) = &job.manifest_path {
-            let _ = fs::remove_file(mp);
+        let _ = tx.send(MigrationProgress::new("Renaming", 96.0, "恢复迁移：正在重命名临时目录为正式目录..."));
+
+        // 步骤10: rename tmp → final
+        if let Err(e) = fs::rename(target_tmp_path, final_target_path) {
+            return Err(format!(
+                "重命名目标文件夹失败: {}。数据完整保存在 {:?}，请手动重命名为 {:?}。",
+                e, target_tmp_path, final_target_path
+            ));
         }
-        return Err(format!("恢复失败：临时目录数据不完整（{}），已清理，请重新迁移", e));
+
+        // 标记 Finalized
+        job.stage = MigrationStage::Finalized;
+        journal::write_job(&job)?;
     }
 
-    let total_files = source_manifest.total_files;
-    let total_size = source_manifest.total_size;
+    // 从 Finalized 状态继续：rename 源 → _old → 建 Junction → Linked
+    if job.stage == MigrationStage::Finalized {
+        // 验证 final 存在
+        if !final_target_path.exists() {
+            let _ = journal::clear_job();
+            return Err(format!("恢复失败：目标目录 {:?} 不存在，请重新迁移", final_target_path));
+        }
 
-    let _ = tx.send(MigrationProgress {
-        stage: "Deleting".to_string(),
-        progress: 95.0,
-        total_files,
-        copied_files: total_files,
-        total_size,
-        copied_size: total_size,
-        current_file: String::new(),
-        detail: "数据验证通过，正在删除源目录...".to_string(),
-    });
+        // 验证源还在且不是 Junction
+        if win_util::is_junction(source_dir) {
+            let _ = journal::clear_job();
+            return Err("恢复失败：源路径已是 Junction，可能迁移已完成".to_string());
+        }
 
-    // 步骤9: 删除源（逐个删除定位失败文件，失败保留 Copied 可重试）
-    if let Err((e, failed_path)) = remove_dir_all_with_detail(source_dir) {
-        let file_info = failed_path.map(|p| {
-            let rel = p.strip_prefix(source_dir).unwrap_or(&p).to_string_lossy();
-            format!("，失败的文件: {}", rel)
-        }).unwrap_or_default();
-        let lock_info = detect_locks_with_fallback(source_dir);
-        return Err(format!(
-            "删除源目录失败: {}{}{}。请关闭占用进程后重新点击迁移。",
-            e, file_info, lock_info
-        ));
+        let old_source_path = make_old_path(source_dir);
+
+        // 检查 _old 路径是否已存在
+        if old_source_path.exists() {
+            let _ = journal::clear_job();
+            return Err(format!(
+                "源目录的旧备份路径已存在 {:?}，请先手动删除后重试",
+                old_source_path
+            ));
+        }
+
+        let total_files = 0;
+        let total_size = 0u64;
+
+        // 步骤11: rename 源 → _old
+        let _ = tx.send(MigrationProgress::new("Renaming", 97.0, "恢复迁移：正在重命名源目录以腾出原路径..."));
+
+        if let Err(e) = fs::rename(source_dir, &old_source_path) {
+            let lock_info = detect_locks_with_fallback(source_dir);
+            return Err(format!(
+                "重命名源目录失败: {}{}。请关闭占用进程后重试。",
+                e, lock_info
+            ));
+        }
+
+        // 标记 SourceRenamed
+        job.stage = MigrationStage::SourceRenamed;
+        job.renamed_source_path = Some(old_source_path.clone());
+        journal::write_job(&job)?;
+
+        // 步骤12: 建 Junction
+        let _ = tx.send(MigrationProgress::new("Linking", 98.0, "恢复迁移：正在建立 NTFS Junction..."));
+
+        if let Err(e) = win_util::create_junction(source_dir, final_target_path) {
+            // Junction 失败，尝试回滚 rename
+            if fs::rename(&old_source_path, source_dir).is_ok() {
+                job.stage = MigrationStage::Finalized;
+                job.renamed_source_path = None;
+                let _ = journal::write_job(&job);
+            }
+            return Err(format!(
+                "建立 NTFS 目录联接失败: {}。请手动执行 mklink /J \"{:?}\" \"{:?}\"。",
+                e, source_dir, final_target_path
+            ));
+        }
+
+        // 标记 Linked
+        job.stage = MigrationStage::Linked;
+        journal::write_job(&job)?;
+
+        let _ = tx.send(MigrationProgress {
+            stage: "PendingConfirmation".to_string(),
+            progress: 100.0,
+            total_files,
+            copied_files: total_files,
+            total_size,
+            copied_size: total_size,
+            current_file: String::new(),
+            detail: "迁移已完成！请测试软件是否正常使用".to_string(),
+            source_path: Some(job.source_path.to_string_lossy().to_string()),
+            renamed_source_path: job.renamed_source_path.as_ref().and_then(|p| p.to_str().map(|s| s.to_string())),
+            final_target_path: Some(job.final_target_path.to_string_lossy().to_string()),
+        });
+
+        return Ok(());
     }
 
-    // 步骤9.1: SourceDeleted
-    job.stage = MigrationStage::SourceDeleted;
-    journal::write_job(&job)?;
-
-    let _ = tx.send(MigrationProgress {
-        stage: "Renaming".to_string(),
-        progress: 97.0,
-        total_files,
-        copied_files: total_files,
-        total_size,
-        copied_size: total_size,
-        current_file: String::new(),
-        detail: "激活重命名目标文件夹目录结构...".to_string(),
-    });
-
-    // 步骤10: rename（失败保留 tmp）
-    if let Err(e) = fs::rename(target_tmp_path, final_target_path) {
-        return Err(format!(
-            "重命名目标文件夹失败: {}。源已删除，数据完整保存在 {:?}，请手动重命名为 {:?}。",
-            e, target_tmp_path, final_target_path
-        ));
-    }
-
-    // 步骤10.1: Renamed
-    job.stage = MigrationStage::Renamed;
-    journal::write_job(&job)?;
-
-    let _ = tx.send(MigrationProgress {
-        stage: "Linking".to_string(),
-        progress: 98.0,
-        total_files,
-        copied_files: total_files,
-        total_size,
-        copied_size: total_size,
-        current_file: String::new(),
-        detail: "正在原位置建立重解析点 (NTFS Junction) 重定向...".to_string(),
-    });
-
-    // 步骤11: 建 Junction（失败保留 final 清日志）
-    if let Err(e) = win_util::create_junction(source_dir, final_target_path) {
-        let _ = journal::clear_job();
-        return Err(format!(
-            "建立 NTFS 目录联接失败: {}。数据已安全迁移至 {:?}，请手动执行 mklink /J \"{:?}\" \"{:?}\"。",
-            e, final_target_path, source_dir, final_target_path
-        ));
-    }
-
-    // 步骤11.1: Linked
-    job.stage = MigrationStage::Linked;
-    journal::write_job(&job)?;
-
-    let _ = journal::clear_job();
-    if let Some(mp) = &job.manifest_path {
-        let _ = fs::remove_file(mp);
-    }
-    let _ = tx.send(MigrationProgress {
-        stage: "Done".to_string(),
-        progress: 100.0,
-        total_files,
-        copied_files: total_files,
-        total_size,
-        copied_size: total_size,
-        current_file: String::new(),
-        detail: "迁移完成！C盘空间已安全释放。".to_string(),
-    });
-
-    Ok(())
+    // 不应到达此处
+    Err(format!("恢复失败：不支持从 {:?} 状态恢复", job.stage))
 }
 
 /// 程序启动自检恢复或回滚异常中断的事务
 ///
 /// 恢复策略核心原则：**绝不可删除可能是唯一数据副本的目录**。
 /// 每个状态依据"日志状态 + 文件系统实际状态"推导恢复动作：
-/// - 源删除前（Initiated/Copied）：tmp 是冗余副本，源是权威 → 可删 tmp 保源
-/// - 源删除后（SourceDeleted/Renamed）：tmp/final 是唯一副本 → 绝不删，自动补全或提示用户
-/// - Junction 建后（Linked）：迁移完成 → 清理日志
+/// - 源重命名前（Initiated/Copied/Finalized）：源是权威，tmp/final 是冗余副本
+/// - 源重命名后（SourceRenamed/Linked）：final 是权威，_old 是冗余副本（可删）
+/// - 用户确认后（Completed）：final 是唯一权威
 pub fn handle_crash_recovery() -> Result<Option<String>, String> {
     if let Some(job) = journal::read_job()? {
         match job.stage {
@@ -1191,6 +1284,7 @@ pub fn handle_crash_recovery() -> Result<Option<String>, String> {
                 }
                 if job.source_path.exists() {
                     let _ = journal::clear_job();
+                    if let Some(mp) = &job.manifest_path { let _ = fs::remove_file(mp); }
                     Ok(Some(format!(
                         "检测到上次拷贝中途故障中断的事务 {:?}，已安全回滚（删除不完整的临时目录），C盘源数据完好无损。",
                         job.source_path
@@ -1205,111 +1299,156 @@ pub fn handle_crash_recovery() -> Result<Option<String>, String> {
             }
             MigrationStage::Copied => {
                 // 拷贝+校验通过，源应还在，tmp 完整
-                // 不删 tmp！保留 Copied 状态，用户重新迁移同目录可从删除步骤恢复（无需重新拷贝）
+                // 不删 tmp！保留 Copied 状态，用户重新迁移同目录可从后续步骤恢复（无需重新拷贝）
                 if job.source_path.exists() && !win_util::is_junction(&job.source_path) {
                     Ok(Some(format!(
-                        "检测到上次拷贝完成但删除源失败的迁移任务 {:?}。请关闭占用进程后重新迁移该目录，将从删除步骤继续（无需重新拷贝）。",
+                        "检测到上次拷贝完成但后续步骤中断的迁移任务 {:?}。请重新迁移该目录，将从重命名步骤继续（无需重新拷贝）。",
                         job.source_path
                     )))
                 } else {
-                    // 源不在或已是 Junction → 源可能已被删除，tmp 是唯一完整副本，保留待用户处理
+                    // 源不在或已是 Junction → 源可能已被处理，tmp 是唯一完整副本，保留待用户处理
                     Ok(Some(format!(
                         "⚠️ 事务 {:?} 处于已校验状态但源目录不存在。完整数据保存在临时目录 {:?}，请手动重命名为 {:?} 并创建 Junction，或联系技术支持。",
                         job.source_path, job.target_path, job.final_target_path
                     )))
                 }
             }
-            MigrationStage::SourceDeleted => {
-                // 源已删，tmp 是唯一完整副本 → 用持久化 Manifest 校验 tmp 完整性后自动 rename + 建 Junction
-                if !job.target_path.exists() {
-                    let _ = journal::clear_job();
-                    if let Some(mp) = &job.manifest_path { let _ = fs::remove_file(mp); }
-                    return Ok(Some(format!(
-                        "❌ 事务 {:?} 处于源已删除状态但临时目录 {:?} 不存在，数据可能丢失，请检查。",
-                        job.source_path, job.target_path
-                    )));
-                }
-
-                // 用持久化 Manifest 校验 tmp 完整性（源已删，无法重新生成源 Manifest）
-                if let Some(mp) = &job.manifest_path {
-                    if mp.exists() {
-                        match Manifest::load_from_file(mp) {
-                            Ok(source_manifest) => {
-                                match Manifest::generate(&job.target_path) {
-                                    Ok(target_manifest) => {
-                                        if let Err(e) = source_manifest.verify_against(&target_manifest) {
-                                            return Ok(Some(format!(
-                                                "❌ 自动恢复中止：临时目录 {:?} 数据不完整（{}）。数据保留在临时目录，请手动检查或联系技术支持。",
-                                                job.target_path, e
-                                            )));
-                                        }
-                                    }
-                                    Err(e) => {
-                                        return Ok(Some(format!(
-                                            "⚠️ 自动恢复：生成临时目录 Manifest 失败: {}。数据保留在 {:?}，请手动检查。",
-                                            e, job.target_path
-                                        )));
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                // Manifest 损坏，无法校验，提示用户但继续（数据已在 tmp，不删）
-                                eprintln!("Manifest 损坏: {}", e);
-                            }
-                        }
+            MigrationStage::Finalized => {
+                // tmp 已改名 final，源应仍在原位置
+                // 检查 final 和源状态，继续从 rename 源步骤开始
+                if !job.final_target_path.exists() {
+                    // final 不存在，检查 tmp 是否还在（rename 可能未完成）
+                    if job.target_path.exists() {
+                        Ok(Some(format!(
+                            "⚠️ 事务 {:?} 处于 Finalized 状态但正式目标目录 {:?} 不存在，临时目录 {:?} 仍在。请手动重命名临时目录为正式目录后重试。",
+                            job.source_path, job.final_target_path, job.target_path
+                        )))
+                    } else {
+                        let _ = journal::clear_job();
+                        if let Some(mp) = &job.manifest_path { let _ = fs::remove_file(mp); }
+                        Ok(Some(format!(
+                            "❌ 事务 {:?} 处于 Finalized 状态但目标目录均不存在，数据可能丢失，请检查。",
+                            job.source_path
+                        )))
                     }
+                } else if job.source_path.exists() && !win_util::is_junction(&job.source_path) {
+                    // final 在 + 源在 → 自动继续：rename 源→_old → 建 Junction
+                    let old_source_path = make_old_path(&job.source_path);
+                    if old_source_path.exists() {
+                        Ok(Some(format!(
+                            "检测到未完成的迁移 {:?}，但旧备份路径 {:?} 已存在。请手动处理后重试。",
+                            job.source_path, old_source_path
+                        )))
+                    } else if let Err(e) = fs::rename(&job.source_path, &old_source_path) {
+                        Ok(Some(format!(
+                            "⚠️ 自动恢复：重命名源目录失败: {}。请关闭占用程序后重试。",
+                            e
+                        )))
+                    } else {
+                        // 源重命名成功，更新日志
+                        let mut job = job;
+                        job.stage = MigrationStage::SourceRenamed;
+                        job.renamed_source_path = Some(old_source_path.clone());
+                        let _ = journal::write_job(&job);
+
+                        // 自动建 Junction
+                        if let Err(e) = win_util::create_junction(&job.source_path, &job.final_target_path) {
+                            // Junction 失败，回滚 rename
+                            let _ = fs::rename(&old_source_path, &job.source_path);
+                            job.stage = MigrationStage::Finalized;
+                            job.renamed_source_path = None;
+                            let _ = journal::write_job(&job);
+                            return Ok(Some(format!(
+                                "⚠️ 自动恢复：重命名源成功但创建 Junction 失败: {}。请手动执行 mklink /J \"{:?}\" \"{:?}\"。",
+                                e, job.source_path, job.final_target_path
+                            )));
+                        }
+
+                        // 完成，进入 Linked 状态
+                        job.stage = MigrationStage::Linked;
+                        let _ = journal::write_job(&job);
+                        Ok(Some(format!(
+                            "✅ 自动恢复完成：事务 {:?} 已自动完成源重命名与 Junction 创建，迁移成功。请测试软件是否正常使用。",
+                            job.source_path
+                        )))
+                    }
+                } else {
+                    // 源不在或已是 Junction → 源可能已被其他方式处理
+                    Ok(Some(format!(
+                        "⚠️ 事务 {:?} 处于 Finalized 状态但源目录不在原位或已是 Junction。数据安全保存在 {:?}，请手动检查。",
+                        job.source_path, job.final_target_path
+                    )))
+                }
+            }
+            MigrationStage::SourceRenamed => {
+                // 源已重命名为 _old，final 应在，需创建 Junction
+                // 获取 _old 路径（如果日志中没有 renamed_source_path，则推导）
+                let deduced_old_path = job.renamed_source_path.clone()
+                    .unwrap_or_else(|| {
+                        eprintln!("警告：SourceRenamed 状态缺少 renamed_source_path，尝试推导");
+                        make_old_path(&job.source_path)
+                    });
+
+                if !deduced_old_path.exists() {
+                    // _old 不存在 → 源可能未重命名成功或已被删除
+                    if job.source_path.exists() && !win_util::is_junction(&job.source_path) {
+                        // 源还在原位 → 回退到 Finalized，让用户重试
+                        let mut job = job;
+                        job.stage = MigrationStage::Finalized;
+                        job.renamed_source_path = None;
+                        let _ = journal::write_job(&job);
+                        return Ok(Some(format!(
+                            "检测到事务 {:?} 处于 SourceRenamed 状态但旧源目录不存在，源目录仍在原位。已回退至 Finalized 状态，请重试。",
+                            job.source_path
+                        )));
+                    }
+                    let _ = journal::clear_job();
+                    return Ok(Some(format!(
+                        "❌ 事务 {:?} 处于 SourceRenamed 状态但旧源目录 {:?} 不存在，源也不在原位，数据可能丢失，请检查。",
+                        job.source_path, deduced_old_path
+                    )));
                 }
 
-                // 10. 自动 rename
-                if let Err(e) = fs::rename(&job.target_path, &job.final_target_path) {
-                    return Ok(Some(format!(
-                        "⚠️ 自动恢复：重命名 {:?} → {:?} 失败: {}。数据完整保留在临时目录，请手动重命名后重试。",
-                        job.target_path, job.final_target_path, e
-                    )));
-                }
-                // 11. 自动建 Junction
-                if let Err(e) = win_util::create_junction(&job.source_path, &job.final_target_path) {
-                    let _ = journal::clear_job();
-                    if let Some(mp) = &job.manifest_path { let _ = fs::remove_file(mp); }
-                    return Ok(Some(format!(
-                        "⚠️ 自动恢复：数据已重命名为 {:?}，但创建 Junction 失败: {}。请手动执行 mklink /J \"{:?}\" \"{:?}\"。",
-                        job.final_target_path, e, job.source_path, job.final_target_path
-                    )));
-                }
-                let _ = journal::clear_job();
-                if let Some(mp) = &job.manifest_path { let _ = fs::remove_file(mp); }
-                Ok(Some(format!(
-                    "✅ 自动恢复完成：事务 {:?} 已自动完成重命名与 Junction 创建，迁移成功。",
-                    job.source_path
-                )))
-            }
-            MigrationStage::Renamed => {
-                // tmp 已改名 final，Junction 未建 → 自动建 Junction
                 if !job.final_target_path.exists() {
                     let _ = journal::clear_job();
                     return Ok(Some(format!(
-                        "❌ 事务 {:?} 处于已重命名状态但目标目录 {:?} 不存在，数据可能丢失，请检查。",
+                        "❌ 事务 {:?} 处于 SourceRenamed 状态但目标目录 {:?} 不存在，数据可能丢失，请检查。",
                         job.source_path, job.final_target_path
                     )));
                 }
+
+                // _old 在 + final 在 → 自动建 Junction
                 if let Err(e) = win_util::create_junction(&job.source_path, &job.final_target_path) {
-                    let _ = journal::clear_job();
                     return Ok(Some(format!(
-                        "⚠️ 自动恢复：目标目录 {:?} 存在，但创建 Junction 失败: {}。请手动执行 mklink /J \"{:?}\" \"{:?}\"。",
-                        job.final_target_path, e, job.source_path, job.final_target_path
+                        "⚠️ 自动恢复：数据完整但创建 Junction 失败: {}。请手动执行 mklink /J \"{:?}\" \"{:?}\"。",
+                        e, job.source_path, job.final_target_path
                     )));
                 }
-                let _ = journal::clear_job();
+
+                let mut job = job;
+                job.stage = MigrationStage::Linked;
+                if job.renamed_source_path.is_none() {
+                    job.renamed_source_path = Some(deduced_old_path);
+                }
+                let _ = journal::write_job(&job);
                 Ok(Some(format!(
-                    "✅ 自动恢复完成：事务 {:?} 已自动创建 Junction，迁移成功。",
+                    "✅ 自动恢复完成：事务 {:?} 已自动创建 Junction，迁移成功。请测试软件是否正常使用。",
                     job.source_path
                 )))
             }
             MigrationStage::Linked => {
-                // Junction 已建，迁移完成 → 清理日志
-                let _ = journal::clear_job();
+                // Junction 已建，_old 仍存在 → 提示用户确认删除或回滚
                 Ok(Some(format!(
-                    "检测到上次已完成的迁移事务 {:?}，已清理残留日志。",
+                    "检测到已完成的迁移事务 {:?}，等待确认。请确认软件正常使用后点击确认删除旧数据，或如需回滚请执行即时回滚。",
+                    job.source_path
+                )))
+            }
+            MigrationStage::Completed => {
+                // 完全完成 → 清理日志
+                let _ = journal::clear_job();
+                if let Some(mp) = &job.manifest_path { let _ = fs::remove_file(mp); }
+                Ok(Some(format!(
+                    "检测到已完成的迁移事务 {:?}，已清理残留日志。",
                     job.source_path
                 )))
             }
@@ -1319,8 +1458,176 @@ pub fn handle_crash_recovery() -> Result<Option<String>, String> {
     }
 }
 
-/// 执行将已迁移目录一键撤销恢复回原 C 盘（需二次确认）
-pub fn rollback_migration(
+/// 用户确认迁移正常，删除旧源目录（_cdisklinker_old）
+///
+/// 仅在 Linked 状态下可调用。
+/// 删除 _old 目录后，迁移进入 Completed 状态，不可再即时回滚。
+pub fn confirm_delete_source(source_path: &Path) -> Result<(), String> {
+    // 读取当前任务
+    let mut job = journal::read_job()?
+        .ok_or_else(|| "没有进行中的迁移任务".to_string())?;
+
+    // 验证阶段为 Linked
+    if job.stage != MigrationStage::Linked {
+        return Err(format!(
+            "当前迁移状态为 {:?}，仅在 Linked 状态下可确认删除旧源",
+            job.stage
+        ));
+    }
+
+    // 验证源路径匹配
+    if job.source_path != *source_path {
+        return Err(format!(
+            "任务源路径 {:?} 与请求路径 {:?} 不匹配",
+            job.source_path, source_path
+        ));
+    }
+
+    // 获取 _old 路径（如果日志中没有 renamed_source_path，则推导）
+    let deduced_old_path = job.renamed_source_path.clone()
+        .unwrap_or_else(|| {
+            eprintln!("警告：Linked 状态缺少 renamed_source_path，尝试推导");
+            make_old_path(source_path)
+        });
+
+    // 删除 _old 目录（Junction 安全删除）
+    if deduced_old_path.exists() {
+        remove_dir_all_with_detail(&deduced_old_path)
+            .map_err(|(e, failed_path)| {
+                let file_info = failed_path.map(|p| {
+                    let rel = p.strip_prefix(&deduced_old_path).unwrap_or(&p).to_string_lossy();
+                    format!("，失败的文件: {}", rel)
+                }).unwrap_or_default();
+                format!("删除旧源目录失败: {}{}{}", e, file_info,
+                    detect_locks_with_fallback(&deduced_old_path))
+            })?;
+    }
+
+    // 标记 Completed
+    job.stage = MigrationStage::Completed;
+    journal::write_job(&job)?;
+
+    // 清理日志和 Manifest
+    let _ = journal::clear_job();
+    if let Some(mp) = &job.manifest_path {
+        let _ = fs::remove_file(mp);
+    }
+
+    Ok(())
+}
+
+/// 即时回滚：从 Linked/SourceRenamed/Finalized 状态回滚
+///
+/// 无需数据拷贝，仅通过重命名/删除操作即可恢复。
+/// - Linked: 删除 Junction → rename _old 回原路径
+/// - SourceRenamed: rename _old 回原路径（可选：rename final→tmp）
+/// - Finalized: rename final→tmp（源仍在原位，只需清理 final）
+pub fn rollback_migration_instant(source_path: &Path) -> Result<(), String> {
+    // 读取当前任务
+    let job = journal::read_job()?
+        .ok_or_else(|| "没有进行中的迁移任务".to_string())?;
+
+    // 验证源路径匹配
+    if job.source_path != *source_path {
+        return Err(format!(
+            "任务源路径 {:?} 与请求路径 {:?} 不匹配",
+            job.source_path, source_path
+        ));
+    }
+
+    match job.stage {
+        MigrationStage::Linked => {
+            // 1. 删除 Junction
+            if win_util::is_junction(source_path) {
+                win_util::delete_junction(source_path)?;
+            }
+
+            // 2. rename _old 回原路径
+            let old_path = job.renamed_source_path.as_ref()
+                .cloned()
+                .unwrap_or_else(|| make_old_path(source_path));
+
+            if old_path.exists() {
+                fs::rename(&old_path, source_path)
+                    .map_err(|e| format!(
+                        "回滚失败：将 {:?} 重命名回 {:?} 失败: {}",
+                        old_path, source_path, e
+                    ))?;
+            } else {
+                return Err(format!(
+                    "回滚失败：旧源目录 {:?} 不存在，无法恢复原目录",
+                    old_path
+                ));
+            }
+
+            // 3. 清理 final 目录（数据已回到源位置，final 不再需要）
+            if job.final_target_path.exists() {
+                let _ = remove_dir_all_with_detail(&job.final_target_path);
+            }
+
+            // 清理
+            let _ = journal::clear_job();
+            if let Some(mp) = &job.manifest_path {
+                let _ = fs::remove_file(mp);
+            }
+            Ok(())
+        }
+        MigrationStage::SourceRenamed => {
+            // 1. rename _old 回原路径
+            let old_path = job.renamed_source_path.as_ref()
+                .cloned()
+                .unwrap_or_else(|| make_old_path(source_path));
+
+            if old_path.exists() {
+                fs::rename(&old_path, source_path)
+                    .map_err(|e| format!(
+                        "回滚失败：将 {:?} 重命名回 {:?} 失败: {}",
+                        old_path, source_path, e
+                    ))?;
+            } else {
+                return Err(format!(
+                    "回滚失败：旧源目录 {:?} 不存在，无法恢复原目录",
+                    old_path
+                ));
+            }
+
+            // 2. 清理 final 目录（源已恢复，final 不再需要）
+            if job.final_target_path.exists() {
+                let _ = remove_dir_all_with_detail(&job.final_target_path);
+            }
+
+            // 清理
+            let _ = journal::clear_job();
+            if let Some(mp) = &job.manifest_path {
+                let _ = fs::remove_file(mp);
+            }
+            Ok(())
+        }
+        MigrationStage::Finalized => {
+            // 源仍在原位，只需清理 final 目录
+            if job.final_target_path.exists() {
+                let _ = remove_dir_all_with_detail(&job.final_target_path);
+            }
+
+            // 清理
+            let _ = journal::clear_job();
+            if let Some(mp) = &job.manifest_path {
+                let _ = fs::remove_file(mp);
+            }
+            Ok(())
+        }
+        other => Err(format!(
+            "即时回滚不支持 {:?} 状态，仅支持 Linked/SourceRenamed/Finalized",
+            other
+        ))
+    }
+}
+
+/// 执行已完成迁移的撤销恢复（需二次确认，需数据拷贝）
+///
+/// 这是从 Completed 状态回滚的罕见场景：用户在确认删除旧源后
+/// 又想把数据搬回 C 盘。需要物理拷贝数据。
+pub fn rollback_completed_migration(
     source_junction: &Path,
     real_target: &Path,
     tx: Sender<MigrationProgress>,

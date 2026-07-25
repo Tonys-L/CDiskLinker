@@ -3,42 +3,50 @@ use std::path::PathBuf;
 use std::fs::File;
 use std::io::{Write, Read};
 
-/// 迁移流程的核心原子状态阶段
+/// 迁移流程的核心原子状态阶段（V2：先重命名源→建链接→用户确认→删旧源）
 ///
 /// 状态机细化原则：每个里程碑对应一次日志写入，崩溃后依据"日志状态 + 文件系统实际状态"
-/// 推导恢复动作。核心安全约束：源删除前 tmp 是冗余副本（可删）；源删除后 tmp/final 是
-/// 唯一副本（绝不可删）。
+/// 推导恢复动作。核心安全约束：
+/// - 源重命名前（Initiated/Copied/Finalized）：源是权威，tmp/final 是冗余副本
+/// - 源重命名后（SourceRenamed/Linked）：final 是权威，_old 是冗余副本（可删）
+/// - 用户确认后（Completed）：final 是唯一权威
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum MigrationStage {
     /// 第一阶段：日志已建立，物理拷贝准备开始或拷贝进行中
     /// 崩溃恢复：源完整 → 删 tmp；源不在 → 异常，保留 tmp 提示用户
     Initiated,
-    /// 第二阶段：物理拷贝完成且 Hash/数量/大小校验通过，源目录仍完好，tmp 完整
-    /// 崩溃恢复：源在 → 删 tmp 保源；源不在 → 保留 tmp 提示用户
+    /// 第二阶段：物理拷贝完成且校验通过，源目录完好，tmp 完整
+    /// 崩溃恢复：源在 → 可删 tmp 或继续迁移；源不在 → 保留 tmp 提示用户
     Copied,
-    /// 第三阶段：源目录已安全删除，tmp 仍是唯一完整副本（rename 未做）
-    /// 崩溃恢复：tmp 在 → 自动 rename + 建 Junction 完成迁移；tmp 不在 → 数据丢失报错
-    SourceDeleted,
-    /// 第四阶段：tmp 已重命名为 final，数据在 final，但 Junction 未建立
-    /// 崩溃恢复：final 在 → 自动建 Junction 完成迁移；final 不在 → 异常报错
-    Renamed,
-    /// 第五阶段：原 C 盘路径已建立 Junction 重解析点，迁移实质完成
-    /// 崩溃恢复：清理日志即可
+    /// 第三阶段：tmp 已重命名为 final（目标盘准备就绪），源仍在原位置
+    /// 崩溃恢复：源在 → 继续从重命名源步骤开始；final 不在 → 异常
+    Finalized,
+    /// 第四阶段：源目录已重命名为 _old（原路径已腾出），final 是权威副本
+    /// 崩溃恢复：_old 在 + final 在 → 自动建 Junction
+    SourceRenamed,
+    /// 第五阶段：Junction 已创建，迁移功能上完成，等待用户确认测试
+    /// 崩溃恢复：提示用户确认删除旧源或回滚
     Linked,
+    /// 第六阶段：用户确认软件正常，旧源(_old)已删除，迁移完全完成
+    /// 崩溃恢复：清理日志
+    Completed,
 }
 
 /// 事务日志结构体，包含本次迁移任务的一切核心源和目标路径元数据
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PendingJob {
     pub job_id: String,
-    pub source_path: PathBuf,
-    pub target_path: PathBuf,      // 指向目标 D 盘的临时路径，如 D:\Games\.tmp_Steam
-    pub final_target_path: PathBuf,// 指向最终的真实目标路径，如 D:\Games\Steam
+    pub source_path: PathBuf,            // 原路径，如 C:\Steam（Linked 后为 Junction 所在路径）
+    pub target_path: PathBuf,            // D 盘临时路径，如 D:\Games\.tmp_Steam（Finalized 后已改名）
+    pub final_target_path: PathBuf,      // D 盘最终路径，如 D:\Games\Steam（实际数据位置）
     pub stage: MigrationStage,
-    /// 源端 Manifest 文件路径（生成于删除源之前，用于崩溃恢复时校验目标完整性）
-    /// 旧版日志无此字段，serde 默认 None 兼容
+    /// 源端 Manifest 文件路径（用于崩溃恢复时校验目标完整性）
     #[serde(default)]
     pub manifest_path: Option<PathBuf>,
+    /// 源目录重命名后的路径，如 C:\Steam._cdisklinker_old
+    /// 仅在 SourceRenamed 及之后阶段有效
+    #[serde(default)]
+    pub renamed_source_path: Option<PathBuf>,
 }
 
 /// 获取日志文件在可执行程序同目录下的绝对路径

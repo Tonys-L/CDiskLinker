@@ -8,9 +8,10 @@ A Windows tool that frees up C drive space by moving large folders to other driv
 
 ## Features
 
-- **Safe Migration**: Copy → per-file verification → delete source → create junction. Every step is guarded by SHA256 checksums to guarantee zero data loss
+- **Safe Migration**: Copy → per-file verification → rename source → create junction → user confirms → delete old source. Every step is guarded by SHA256 checksums to guarantee zero data loss
 - **Apps Keep Working**: Automatically creates a Directory Junction at the original location, so apps access files from the original path with no awareness of the move
-- **Crash Recovery**: After a power failure or crash, reopening the tool resumes from the last checkpoint
+- **Crash Recovery**: After a power failure or crash, reopening the tool resumes from the exact checkpoint
+- **Instant Rollback**: If an app malfunctions after migration, one-click rollback restores the original state in seconds — no data copying needed
 - **Lock Detection**: Scans for file locks before migration. If deletion fails, it pinpoints exactly which file is held by which process
 - **Async Scanning**: Directory tree opens instantly; file sizes are computed in the background
 - **Auto Elevation**: Automatically detects and requests administrator privileges
@@ -37,18 +38,21 @@ A Windows tool that frees up C drive space by moving large folders to other driv
    - Create a subfolder inside the app's install directory and put a few files in it
    - Migrate this subfolder to another drive with this tool
    - Open the app and confirm everything works before migrating the entire directory
-   - If migration fails, the tool rolls back automatically; if migration succeeds but the app errors, you'll need to manually delete the junction and move the files back
+   - If migration fails, the tool rolls back automatically; if migration succeeds but the app errors, click "Rollback" in the confirmation dialog for instant restoration
 2. **Ensure sufficient target drive space**: The target drive must be larger than the source directory (with at least 1GB headroom)
 3. **Close running apps**: Close apps that are using files in the source directory before migration to avoid file lock failures
 4. **Target drive must be NTFS**: FAT32/exFAT and other file systems are not supported
 
 ## Safety Guarantees
 
-1. **Per-file Verification**: Before deleting the source, every file's path, size, and SHA256 must match exactly — otherwise the source is not deleted
-2. **Lock Detection**: Scans for file locks before migration; pinpoints the locked file and process on deletion failure
-3. **Junction Safety**: Preserves directory junction structure during copy; deletes only the junction, never the target data
-4. **Single-Copy Protection**: After the source is deleted, the target data is the only copy — no step failure will delete it
-5. **Auto Repair**: When source files are modified during migration, the tool automatically syncs the differences and re-verifies
+1. **Per-file Verification**: Before any irreversible operation, every file's path, size, and SHA256 must match exactly — otherwise the source is preserved
+2. **Rename-First**: The source directory is renamed (not deleted) before creating the junction, so the original data is always intact until you confirm
+3. **User Confirmation**: After migration, you must test the app and confirm it works before the old source is deleted
+4. **Instant Rollback**: If the app doesn't work after migration, click "Rollback" to restore the original state in seconds — no data copy needed
+5. **Lock Detection**: Scans for file locks before migration; pinpoints the locked file and process on deletion failure
+6. **Junction Safety**: Preserves directory junction structure during copy; deletes only the junction, never the target data
+7. **Single-Copy Protection**: After the old source is deleted, the target data is the only copy — no step failure will delete it
+8. **Auto Repair**: When source files are modified during migration, the tool automatically syncs the differences and re-verifies
 
 ## Development
 

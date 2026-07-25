@@ -77,7 +77,7 @@
 
 | 模块 | 负责什么 | 业务规则位置 | 依赖哪些模块 | 不负责什么 |
 |------|----------|-------------|-------------|-----------|
-| `ui` | 提供 Slint 界面呈现与事件传递 | `ui/appwindow.slint` 和 `src/main.rs` 中的事件分发 | `engine`, `scanner` | 具体的扫描算法与文件移动操作 |
+| `ui` | 提供 Vue 3 + Naive UI 界面呈现与事件传递 | `src-ui/` 中的 Vue 组件和 Tauri 事件分发 | `engine`, `scanner` | 具体的扫描算法与文件移动操作 |
 | `scanner` | 遍历磁盘目录，统计大小，自动过滤系统黑名单 | `src/scanner.rs` | `win_util` | UI 展现及物理文件迁移 |
 | `engine` | 执行双阶段拷贝验证，维护迁移状态机 | `src/engine.rs` | `win_util`, `journal` | UI 样式与底层 Junction 的物理绑定 |
 | `journal` | `pending_jobs.json` 事务的存盘与启动恢复自检 | `src/journal.rs` | 无外部依赖 | 底层 Junction 接口的调用 |
@@ -96,12 +96,14 @@
 
 | 编号 | 不变量描述 | 检查位置 |
 |------|-----------|----------|
-| **INV-001** | 跨盘迁移时，在源文件夹完全安全删除且 Junction 建立成功之前，目标目录必须处于 `.tmp_` 临时前缀状态，不得提前重命名为正式名称，防止数据不一致。 | `src/engine.rs` |
+| **INV-001** | 跨盘迁移时，在数据完整性校验通过且目标目录重命名为正式名称（final）之前，目标目录必须处于 `.tmp_` 临时前缀状态。在 Junction 创建之前，数据必须已处于目标盘的最终位置（final），防止数据不一致。 | `src/engine.rs` |
 | **INV-002** | 任何迁移发起前，目标磁盘的空闲空间在扣除本次迁移所需大小后，必须保留至少 1GB 的硬性安全余量。 | `src/engine.rs` (空间预检) |
 | **INV-003** | 绝对禁止对系统黑名单目录（如 `C:\Windows`）及其子目录执行任何读取、修改或删除。 | `src/scanner.rs` 和 `src/engine.rs` |
-| **INV-004** | 源目录删除后（状态 ≥ SourceDeleted），临时目录 `tmp` 或正式目录 `final` 成为唯一数据副本，崩溃恢复与异常处理中**绝对禁止删除**该唯一副本。 | `src/engine.rs` (handle_crash_recovery) |
+| **INV-004** | 源目录重命名后（状态 ≥ SourceRenamed），目标盘上的正式目录 `final` 成为唯一权威数据副本，崩溃恢复与异常处理中**绝对禁止删除**该目录。`_cdisklinker_old` 目录为冗余副本（可安全删除），但 `final` 目录受唯一副本保护。 | `src/engine.rs` (handle_crash_recovery) |
 | **INV-005** | 目标盘文件系统必须为 NTFS。Junction 重解析点仅在 NTFS 上受支持，FAT32/exFAT/网络盘会导致创建失败。 | `src/engine.rs` (输入校验 0f) |
 | **INV-006** | 源路径不能是盘符根目录（如 `C:\`），否则 `file_name()` 为空导致目标目录名异常。 | `src/engine.rs` (输入校验 0e) |
+| **INV-007** | 源目录在创建 Junction 之前必须重命名（而非删除），重命名为 `_cdisklinker_old` 后缀。这确保用户发现软件异常时可以即时回滚（重命名回源目录即可），无需重新拷贝数据。 | `src/engine.rs` |
+| **INV-008** | `_cdisklinker_old` 目录在用户明确确认迁移正常之前不得删除。仅当用户确认（`Linked` → `Completed` 转换）后方可删除旧源目录。 | `src/engine.rs` |
 
 ---
 
@@ -124,13 +126,13 @@
 
 ### 技术约束
 
-- **开发语言**：Rust (Edition 2021)
-- **GUI 框架**：Slint (v1.6+)
+- **开发语言**：Rust (Edition 2021) + TypeScript (Vue 3 前端)
+- **GUI 框架**：Vue 3 + Naive UI (via Tauri 2.x)
 - **构建目标**：`x86_64-pc-windows-msvc`
 
 ### 环境约束
 
-- 运行时不依赖 Node.js/Webkit 运行环境，不需要预装 .NET 运行时。
+- 运行时依赖系统 WebView2（Windows 10 1803+ 内置或自动安装），不需要预装 Node.js/.NET 运行时。
 - 单个打包的 `.exe` 独立执行，体积控制在 10MB 内。
 
 ---
@@ -150,3 +152,4 @@
 |------|----------|--------|----------|
 | 2026-07-21 | 初始化版本，建立模块定位表与三个核心不变量 | Antigravity | — |
 | 2026-07-23 | 新增 INV-004（唯一副本保护）、INV-005（NTFS 强制）、INV-006（根目录禁止） | Antigravity | #TASK-crash-recovery 同步更新 flows.md |
+| 2026-07-25 | V2 迁移流程：更新 INV-001（Junction 前数据须在 final 位置）、INV-004（源重命名后 final 为唯一权威副本）；新增 INV-007（源须重命名非删除）、INV-008（_old 须用户确认后方可删）；技术栈更新为 Vue 3 + Naive UI + Tauri 2.x | Antigravity | #TASK-v2-migration-flow 同步更新 flows.md |

@@ -325,6 +325,21 @@ pub fn rollback_journal(app: AppHandle) -> Result<String, String> {
     }
 }
 
+/// 用户确认迁移正常，删除旧源目录（_cdisklinker_old）
+#[tauri::command]
+pub fn confirm_delete_source(path: String) -> Result<(), String> {
+    let source_path = PathBuf::from(&path);
+    engine::confirm_delete_source(&source_path)
+}
+
+/// 即时回滚迁移（秒级，无需数据拷贝）
+/// 适用于 Linked / SourceRenamed / Finalized 状态
+#[tauri::command]
+pub fn rollback_migration_instant(path: String) -> Result<(), String> {
+    let source_path = PathBuf::from(&path);
+    engine::rollback_migration_instant(&source_path)
+}
+
 #[tauri::command]
 pub fn check_crash_recovery() -> Result<CrashRecoveryResult, String> {
     match engine::handle_crash_recovery() {
