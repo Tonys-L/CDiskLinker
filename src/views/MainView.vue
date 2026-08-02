@@ -83,6 +83,16 @@
               indicator-placement="inside"
             />
           </div>
+          <div class="fast-mode-row">
+            <n-switch v-model:value="store.fastMode" :disabled="store.migrationStatus !== 'Idle'" />
+            <span class="fast-mode-label">{{ t('migration.fastMode') }}</span>
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <span class="fast-mode-help">?</span>
+              </template>
+              {{ t('migration.fastModeTip') }}
+            </n-tooltip>
+          </div>
           <n-button
             type="primary"
             :disabled="!canMigrate"
@@ -306,6 +316,31 @@ onMounted(async () => {
 
 .progress-area {
   margin-bottom: 10px;
+}
+
+.fast-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.fast-mode-label {
+  flex-shrink: 0;
+}
+
+.fast-mode-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 11px;
+  cursor: help;
 }
 
 .progress-label {

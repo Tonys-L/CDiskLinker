@@ -204,11 +204,13 @@ pub fn kill_locking_processes(path: String) -> Result<(), String> {
 
 /// target_dir 可以是盘符路径（如 "D:\"），也可以是完整的目标目录路径（如 "D:\CDiskLinker_Moved"）。
 /// 迁移后文件将位于 target_dir\目录名 下。
+/// fast_mode: true 时跳过目标端 SHA256 校验，仅校验文件大小（更快但不防磁盘静默错误）
 #[tauri::command]
 pub fn migrate_selected(
     app: AppHandle,
     paths: Vec<String>,
     target_dir: String,
+    fast_mode: bool,
 ) -> Result<(), String> {
     if paths.is_empty() {
         return Err("没有选定任何可安全移链的文件包目录".to_string());
@@ -263,7 +265,7 @@ pub fn migrate_selected(
             let target_dir_clone = target_dir.clone();
 
             std::thread::spawn(move || {
-                let res = engine::execute_migration(&entry, &target_dir_clone, tx);
+                let res = engine::execute_migration(&entry, &target_dir_clone, tx, fast_mode);
                 let _ = result_tx.send(res);
             });
 

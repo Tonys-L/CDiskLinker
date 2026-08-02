@@ -274,6 +274,112 @@ impl Manifest {
         Ok(())
     }
 
+    /// 递归生成目录的 Manifest（仅大小，不计算 SHA256）
+    ///
+    /// 与 `generate` 结构相同，但 sha256 字段为空字符串。
+    /// 用于 fast_mode 的目标端校验：仅校验文件数+路径+大小+Junction+空目录，
+    /// 省略 SHA256 计算以减少磁盘读取（从 2 次降为 1 次）。
+    /// 关键：不跟入 Junction，Junction 单独记录目标路径
+    pub fn generate_size_only(root: &Path) -> Result<Self, String> {
+        let root_str = root.to_string_lossy().to_string();
+        let mut files = Vec::new();
+        let mut junctions = Vec::new();
+        let mut empty_dirs = Vec::new();
+
+        Self::collect_inner_size_only(root, root, &mut files, &mut junctions, &mut empty_dirs)?;
+
+        let total_size: u64 = files.iter().map(|f| f.size).sum();
+        let total_files = files.len();
+
+        let mut manifest = Manifest {
+            source_root: root_str,
+            files,
+            junctions,
+            empty_dirs,
+            total_files,
+            total_size,
+            self_hash: String::new(), // 持久化时填充
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        };
+
+        // 计算自哈希（基于不含 self_hash 的内容）
+        manifest.self_hash = manifest.compute_self_hash();
+
+        Ok(manifest)
+    }
+
+    /// 递归收集文件、Junction、空目录（仅大小版，不计算 SHA256）
+    fn collect_inner_size_only(
+        base: &Path,
+        current: &Path,
+        files: &mut Vec<ManifestFileEntry>,
+        junctions: &mut Vec<ManifestJunctionEntry>,
+        empty_dirs: &mut Vec<ManifestDirEntry>,
+    ) -> Result<(), String> {
+        let mut has_entries = false;
+
+        if let Ok(entries) = fs::read_dir(current) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Ok(metadata) = entry.metadata() {
+                    has_entries = true;
+
+                    // 统一路径分隔符为正斜杠（跨平台一致）
+                    let rel = path.strip_prefix(base)
+                        .map_err(|e| format!("路径前缀剥离失败: {}", e))?
+                        .to_string_lossy()
+                        .replace('\\', "/");
+
+                    // Junction：记录目标路径，不跟入
+                    if metadata.is_dir() && win_util::is_junction(&path) {
+                        let target = win_util::read_junction_target(&path)?
+                            .to_string_lossy().to_string();
+                        junctions.push(ManifestJunctionEntry {
+                            relative_path: rel,
+                            target,
+                        });
+                        continue;
+                    }
+
+                    // 文件级符号链接：跳过
+                    if metadata.file_type().is_symlink() {
+                        continue;
+                    }
+
+                    if metadata.is_dir() {
+                        // 普通目录：递归
+                        Self::collect_inner_size_only(base, &path, files, junctions, empty_dirs)?;
+                    } else {
+                        // 普通文件：仅取大小，不计算 SHA256
+                        // 使用 fs::metadata（实时查询）而非 entry.metadata（目录项缓存）
+                        let actual_size = fs::metadata(&path)
+                            .map(|m| m.len())
+                            .unwrap_or(metadata.len());
+                        files.push(ManifestFileEntry {
+                            relative_path: rel,
+                            size: actual_size,
+                            sha256: String::new(), // fast_mode 不计算
+                        });
+                    }
+                }
+            }
+        }
+
+        // 空目录：记录以保持目录结构
+        if !has_entries && current != base {
+            let rel = current.strip_prefix(base)
+                .map_err(|e| format!("路径前缀剥离失败: {}", e))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            empty_dirs.push(ManifestDirEntry { relative_path: rel });
+        }
+
+        Ok(())
+    }
+
     /// 计算自身内容哈希（不含 self_hash 字段）
     fn compute_self_hash(&self) -> String {
         let mut copy = self.clone();
@@ -356,6 +462,98 @@ impl Manifest {
                     src.relative_path, src.sha256, tgt.sha256
                 ));
             }
+        }
+
+        // 2. Junction 数量 + 目标指向
+        if self.junctions.len() != target_manifest.junctions.len() {
+            return Err(format!(
+                "Junction 数量不一致：源 {} 个，目标 {} 个",
+                self.junctions.len(), target_manifest.junctions.len()
+            ));
+        }
+
+        let mut src_jcns = self.junctions.clone();
+        let mut tgt_jcns = target_manifest.junctions.clone();
+        src_jcns.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+        tgt_jcns.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+
+        for (i, (src, tgt)) in src_jcns.iter().zip(tgt_jcns.iter()).enumerate() {
+            if src.relative_path != tgt.relative_path {
+                return Err(format!(
+                    "第 {} 个 Junction 路径不匹配：源 {:?}，目标 {:?}",
+                    i + 1, src.relative_path, tgt.relative_path
+                ));
+            }
+            // Junction 目标比对（大小写不敏感，Windows 路径不区分大小写）
+            if !src.target.eq_ignore_ascii_case(&tgt.target) {
+                return Err(format!(
+                    "Junction 目标不一致 {:?}：源 {:?}，目标 {:?}",
+                    src.relative_path, src.target, tgt.target
+                ));
+            }
+        }
+
+        // 3. 空目录
+        if self.empty_dirs.len() != target_manifest.empty_dirs.len() {
+            return Err(format!(
+                "空目录数量不一致：源 {} 个，目标 {} 个",
+                self.empty_dirs.len(), target_manifest.empty_dirs.len()
+            ));
+        }
+
+        let mut src_dirs = self.empty_dirs.clone();
+        let mut tgt_dirs = target_manifest.empty_dirs.clone();
+        src_dirs.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+        tgt_dirs.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+
+        for (src, tgt) in src_dirs.iter().zip(tgt_dirs.iter()) {
+            if src.relative_path != tgt.relative_path {
+                return Err(format!(
+                    "空目录不匹配：源 {:?}，目标 {:?}",
+                    src.relative_path, tgt.relative_path
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// 逐项校验（仅大小版，不校验 SHA256）
+    ///
+    /// 与 `verify_against` 结构相同，但跳过 SHA256 比对。
+    /// 仅校验：文件数量 + 路径 + 大小 + Junction（数量+路径+目标）+ 空目录。
+    /// 用于 fast_mode：源端 Manifest 由流式拷贝生成（含 SHA256），
+    /// 目标端 Manifest 由 `generate_size_only` 生成（不含 SHA256），
+    /// 此函数仅做大小级别校验，任何一项不匹配返回错误。
+    pub fn verify_size_only(&self, target_manifest: &Manifest) -> Result<(), String> {
+        // 1. 文件总数
+        if self.files.len() != target_manifest.files.len() {
+            return Err(format!(
+                "文件数量不一致：源 {} 个，目标 {} 个",
+                self.files.len(), target_manifest.files.len()
+            ));
+        }
+
+        // 排序后逐项比对（路径 + 大小，跳过 SHA256）
+        let mut src_files = self.files.clone();
+        let mut tgt_files = target_manifest.files.clone();
+        src_files.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+        tgt_files.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+
+        for (i, (src, tgt)) in src_files.iter().zip(tgt_files.iter()).enumerate() {
+            if src.relative_path != tgt.relative_path {
+                return Err(format!(
+                    "第 {} 个文件路径不匹配：源 {:?}，目标 {:?}",
+                    i + 1, src.relative_path, tgt.relative_path
+                ));
+            }
+            if src.size != tgt.size {
+                return Err(format!(
+                    "文件大小不一致 {:?}：源 {} 字节，目标 {} 字节",
+                    src.relative_path, src.size, tgt.size
+                ));
+            }
+            // fast_mode：跳过 SHA256 校验
         }
 
         // 2. Junction 数量 + 目标指向
@@ -561,9 +759,15 @@ fn detect_locks_with_fallback(dir: &Path) -> String {
     "，未检测到占用进程或锁定文件".to_string()
 }
 
-/// 递归物理文件拷贝核心逻辑，实时发送结构化进度（带节流）
+/// 递归物理文件拷贝核心逻辑（流式哈希版），实时发送结构化进度（带节流）
+///
+/// 与旧版 copy_dir_recursive 的区别：
+/// 1. 在拷贝同时流式计算 SHA256（hasher.update），避免事后二次读盘
+/// 2. 拷贝缓冲从 64KB 提升到 256KB
+/// 3. 拷贝过程中同步收集 Manifest 条目（file/junction/empty_dir），供后续校验使用
+///
 /// base_src 为源根目录，用于计算文件的相对路径以在日志中显示完整层级
-fn copy_dir_recursive(
+fn copy_dir_recursive_with_hash(
     src: &Path,
     dst: &Path,
     base_src: &Path,
@@ -572,6 +776,9 @@ fn copy_dir_recursive(
     total_bytes: u64,
     total_files: usize,
     tx: &Sender<MigrationProgress>,
+    file_entries: &mut Vec<ManifestFileEntry>,
+    junction_entries: &mut Vec<ManifestJunctionEntry>,
+    empty_dir_entries: &mut Vec<ManifestDirEntry>,
 ) -> Result<(), String> {
     if !dst.exists() {
         fs::create_dir_all(dst)
@@ -581,25 +788,36 @@ fn copy_dir_recursive(
     use std::time::Instant;
     let mut last_send = Instant::now();
 
+    // 跟踪本目录是否含真实条目（用于空目录判定）
+    let mut has_entries = false;
+
     if let Ok(entries) = fs::read_dir(src) {
         for entry in entries.flatten() {
             let s_path = entry.path();
             let d_path = dst.join(entry.file_name());
 
             if let Ok(metadata) = entry.metadata() {
+                has_entries = true;
+
                 // 检测子目录是否为 Junction（重解析点）
                 // 关键：必须先检测再判断 is_dir，否则 Junction 会被当作普通目录递归进入
                 if metadata.is_dir() && win_util::is_junction(&s_path) {
                     // 子目录是 Junction：读取其目标路径，在目标位置重建同指向的 Junction
                     let rel = s_path.strip_prefix(base_src)
                         .unwrap_or(&s_path)
-                        .to_string_lossy();
+                        .to_string_lossy()
+                        .replace('\\', "/");
                     match win_util::read_junction_target(&s_path) {
                         Ok(junction_target) => {
                             // 在目标位置创建同指向的 Junction
                             if let Err(e) = win_util::create_junction(&d_path, &junction_target) {
                                 return Err(format!("重建子目录 Junction 失败 [{} -> {:?}]: {}", rel, junction_target, e));
                             }
+                            // 收集 Junction 条目（目标指向原 Junction 的目标，保持指向一致）
+                            junction_entries.push(ManifestJunctionEntry {
+                                relative_path: rel.clone(),
+                                target: junction_target.to_string_lossy().to_string(),
+                            });
                             let _ = tx.send(MigrationProgress {
                                 stage: "Copying".to_string(),
                                 progress: 0.0, // 保持上一条进度
@@ -627,30 +845,38 @@ fn copy_dir_recursive(
                 }
 
                 if metadata.is_dir() {
-                    copy_dir_recursive(&s_path, &d_path, base_src, copied_bytes, copied_files, total_bytes, total_files, tx)?;
+                    copy_dir_recursive_with_hash(&s_path, &d_path, base_src, copied_bytes, copied_files, total_bytes, total_files, tx, file_entries, junction_entries, empty_dir_entries)?;
                 } else {
                     // 计算相对于源根目录的相对路径，日志中显示完整层级
                     let file_name = s_path.strip_prefix(base_src)
                         .unwrap_or(&s_path)
                         .to_string_lossy()
                         .to_string();
+                    // Manifest 用的相对路径（正斜杠分隔）
+                    let rel_path = file_name.replace('\\', "/");
 
                     let mut src_file = File::open(&s_path)
                         .map_err(|e| format!("无法打开源文件 {:?}: {}", s_path, e))?;
                     let mut dst_file = File::create(&d_path)
                         .map_err(|e| format!("无法创建目标文件 {:?}: {}", d_path, e))?;
 
-                    let mut buffer = [0u8; 64 * 1024]; // 64KB 拷贝块缓冲
+                    // 流式 SHA256：边读边算，避免事后二次读盘
+                    let mut hasher = Sha256::new();
+                    let mut buffer = [0u8; 256 * 1024]; // 256KB 拷贝块缓冲（提升吞吐）
+                    let mut actual_size: u64 = 0;
                     loop {
                         let bytes_read = src_file.read(&mut buffer)
                             .map_err(|e| format!("读取源文件失败: {}", e))?;
                         if bytes_read == 0 {
                             break;
                         }
+                        // 流式喂入哈希（仅对源数据，目标写入不影响哈希）
+                        hasher.update(&buffer[..bytes_read]);
                         dst_file.write_all(&buffer[..bytes_read])
                             .map_err(|e| format!("写入目标文件失败: {}", e))?;
 
                         *copied_bytes += bytes_read as u64;
+                        actual_size += bytes_read as u64;
 
                         // 节流：至少 100ms 发一次，或文件读完时发一次
                         let should_send = last_send.elapsed().as_millis() >= 100;
@@ -680,6 +906,14 @@ fn copy_dir_recursive(
                     dst_file.flush().map_err(|e| format!("数据落盘同步失败: {}", e))?;
                     *copied_files += 1;
 
+                    // 收集 Manifest 文件条目（流式哈希结果 + 实际读取字节数）
+                    let sha256 = format!("{:x}", hasher.finalize());
+                    file_entries.push(ManifestFileEntry {
+                        relative_path: rel_path,
+                        size: actual_size,
+                        sha256,
+                    });
+
                     // 每个文件复制完成后也发一次（确保小文件有日志）
                     let progress = if total_bytes > 0 {
                         (*copied_bytes as f32 / total_bytes as f32) * 80.0 + 10.0
@@ -705,6 +939,15 @@ fn copy_dir_recursive(
         }
     }
 
+    // 空目录收集：本目录无任何真实条目，且不是根目录
+    if !has_entries && src != base_src {
+        let rel = src.strip_prefix(base_src)
+            .map_err(|e| format!("路径前缀剥离失败: {}", e))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        empty_dir_entries.push(ManifestDirEntry { relative_path: rel });
+    }
+
     Ok(())
 }
 
@@ -719,6 +962,7 @@ pub fn execute_migration(
     entry: &ScanEntry,
     target_drive: &str,
     tx: Sender<MigrationProgress>,
+    fast_mode: bool,
 ) -> Result<(), String> {
     let source_dir = &entry.path;
 
@@ -845,17 +1089,14 @@ pub fn execute_migration(
         let _ = remove_dir_all_with_detail(&target_tmp_path);
     }
 
-    // 5. 【生成源端 Manifest 并持久化】删除源之前的权威清单
-    //    崩溃恢复时用此清单校验目标完整性（即使源已删也能校验）
-    let _ = tx.send(MigrationProgress::new("PreScanning", 7.0, "正在生成源端文件清单(SHA256)..."));
-    let source_manifest = Manifest::generate(source_dir)?;
-
-    // Manifest 文件路径与 pending_jobs.json 同目录
+    // 5. 确定 Manifest 文件路径（流式哈希优化：不再独立预扫描源端）
+    //    源端 Manifest 将在步骤 7 的流式拷贝过程中同步生成（边拷贝边算 SHA256）
+    //    Manifest 文件路径与 pending_jobs.json 同目录
     let manifest_path = journal::get_journal_dir()?.join(format!("manifest_{}.json", uuid_v4_like()));
-    source_manifest.save_to_file(&manifest_path)?;
 
     // 6. 注册并写入待办事务日志 (Stage = Initiated，含 manifest 路径)
-    //    原子顺序：先写 Manifest → 再写日志。崩溃时若日志有 Initiated 但无 Manifest，视为步骤1前崩溃
+    //    原子顺序：先写日志（含 manifest 路径）→ 再拷贝 → 拷贝完成后写 manifest 文件
+    //    崩溃恢复语义：若日志有 Initiated 但 manifest 文件不存在，视为拷贝中途崩溃（删 tmp + 清日志）
     let job = PendingJob {
         job_id: uuid_v4_like(),
         source_path: source_dir.clone(),
@@ -881,10 +1122,15 @@ pub fn execute_migration(
         final_target_path: None,
     });
 
-    // 7. 执行第一阶段：物理复制数据流并发送进度
+    // 7. 执行第一阶段：物理复制数据流 + 流式 SHA256 计算 + 同步收集 Manifest 条目
+    //    流式优化：拷贝过程中边读边算哈希，磁盘读取从 3 次（预扫描+拷贝+校验）降为 2 次（拷贝+校验）
+    //    fast_mode 下校验只读大小不读内容，可进一步降为 1.5 次（拷贝读全量+校验仅读目录项）
     let mut copied_bytes = 0u64;
     let mut copied_files = 0usize;
-    let copy_result = copy_dir_recursive(
+    let mut file_entries: Vec<ManifestFileEntry> = Vec::new();
+    let mut junction_entries: Vec<ManifestJunctionEntry> = Vec::new();
+    let mut empty_dir_entries: Vec<ManifestDirEntry> = Vec::new();
+    let copy_result = copy_dir_recursive_with_hash(
         source_dir,
         &target_tmp_path,
         source_dir,
@@ -893,17 +1139,42 @@ pub fn execute_migration(
         total_size,
         total_files,
         &tx,
+        &mut file_entries,
+        &mut junction_entries,
+        &mut empty_dir_entries,
     );
 
     if let Err(e) = copy_result {
         let _ = remove_dir_all_with_detail(&target_tmp_path);
         let _ = journal::clear_job();
-        let _ = fs::remove_file(&manifest_path);
+        // manifest 文件尚未写入（流式收集未完成），无需删除
         return Err(format!("文件拷贝流遇到异常终止: {}", e));
     }
 
-    // 8. 【Manifest 逐项校验】生成目标端 Manifest，与源端逐项比对
-    //    这是删除源之前的最终防线：每个文件的路径+大小+SHA256 必须完全一致
+    // 7.1 从流式收集的条目组装源端 Manifest 并持久化
+    //     这是删除源之前的权威清单，崩溃恢复时用于校验目标完整性（即使源已删也能校验）
+    let total_size_manifest: u64 = file_entries.iter().map(|f| f.size).sum();
+    let total_files_manifest = file_entries.len();
+    let mut source_manifest = Manifest {
+        source_root: source_dir.to_string_lossy().to_string(),
+        files: file_entries,
+        junctions: junction_entries,
+        empty_dirs: empty_dir_entries,
+        total_files: total_files_manifest,
+        total_size: total_size_manifest,
+        self_hash: String::new(),
+        created_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    };
+    source_manifest.self_hash = source_manifest.compute_self_hash();
+    source_manifest.save_to_file(&manifest_path)?;
+
+    // 8. 【Manifest 逐项校验】按 fast_mode 选择校验策略
+    //    fast_mode=false（严格模式）：目标端 generate(含SHA256) + verify_against，每个文件路径+大小+SHA256 必须完全一致
+    //    fast_mode=true（快速模式）：目标端 generate_size_only(仅大小) + verify_size_only，仅校验路径+大小+Junction+空目录
+    //    这是删除源之前的最终防线
     let _ = tx.send(MigrationProgress {
         stage: "Verifying".to_string(),
         progress: 90.0,
@@ -912,14 +1183,25 @@ pub fn execute_migration(
         total_size,
         copied_size: total_size,
         current_file: String::new(),
-        detail: "正在校验物理数据完整性与哈希值...".to_string(),
+        detail: if fast_mode {
+            "正在校验物理数据完整性(快速模式: 大小校验)...".to_string()
+        } else {
+            "正在校验物理数据完整性与哈希值...".to_string()
+        },
         source_path: None,
         renamed_source_path: None,
         final_target_path: None,
     });
 
-    let target_manifest = Manifest::generate(&target_tmp_path)?;
-    if let Err(e) = source_manifest.verify_against(&target_manifest) {
+    let verify_result = if fast_mode {
+        let target_manifest = Manifest::generate_size_only(&target_tmp_path)?;
+        source_manifest.verify_size_only(&target_manifest)
+    } else {
+        let target_manifest = Manifest::generate(&target_tmp_path)?;
+        source_manifest.verify_against(&target_manifest)
+    };
+
+    if let Err(e) = verify_result {
         // 校验不一致：可能是源在复制期间被活跃进程修改（竞态条件）
         // 解决方案：用源当前最新内容重新覆盖差异文件，然后重新校验
         // 最多重试 2 次，防止源持续被修改导致无限循环
@@ -930,9 +1212,12 @@ pub fn execute_migration(
         let max_retries = 2;
 
         loop {
-            // 找出差异文件并重新复制
+            // 重试时统一用严格模式（generate 含 SHA256）生成 fresh source manifest 以准确定位差异
+            // fast_mode 下差异定位准确性优先于性能（重试是异常路径）
             let fresh_source_manifest = Manifest::generate(source_dir)?;
-            let diff_files = find_manifest_diff_files(&fresh_source_manifest, &target_manifest);
+            // 目标端 manifest 也用严格模式生成，确保 find_manifest_diff_files 能正确比对 sha256
+            let target_manifest_for_diff = Manifest::generate(&target_tmp_path)?;
+            let diff_files = find_manifest_diff_files(&fresh_source_manifest, &target_manifest_for_diff);
 
             if diff_files.is_empty() {
                 // 源和目标完全一致（不太可能到这里，但防御性编程）
@@ -953,9 +1238,16 @@ pub fn execute_migration(
                 }
             }
 
-            // 重新生成目标 Manifest 并校验
-            let new_target_manifest = Manifest::generate(&target_tmp_path)?;
-            match fresh_source_manifest.verify_against(&new_target_manifest) {
+            // 重新校验（按 fast_mode 分支选择校验策略）
+            let new_verify_result = if fast_mode {
+                let new_target_manifest = Manifest::generate_size_only(&target_tmp_path)?;
+                fresh_source_manifest.verify_size_only(&new_target_manifest)
+            } else {
+                let new_target_manifest = Manifest::generate(&target_tmp_path)?;
+                fresh_source_manifest.verify_against(&new_target_manifest)
+            };
+
+            match new_verify_result {
                 Ok(()) => {
                     // 一致了，更新持久化 Manifest
                     fresh_source_manifest.save_to_file(&manifest_path)?;
@@ -1662,9 +1954,15 @@ pub fn rollback_completed_migration(
     let _ = tx.send(MigrationProgress::new("RollingBack", 30.0, "正在将文件搬运回 C 盘原位置..."));
 
     // 2. 拷贝数据回原位置
+    //    回滚是反向拷贝，不需要流式哈希（回滚校验仍用 verify_against 严格校验）
+    //    但因 copy_dir_recursive 已升级为 copy_dir_recursive_with_hash，此处传入 3 个空容器
+    //    容器会被填充但回滚流程不使用（回滚后用 Manifest::generate 重新生成清单校验）
     let mut copied_bytes = 0u64;
     let mut copied_files = 0usize;
-    let copy_result = copy_dir_recursive(
+    let mut file_entries: Vec<ManifestFileEntry> = Vec::new();
+    let mut junction_entries: Vec<ManifestJunctionEntry> = Vec::new();
+    let mut empty_dir_entries: Vec<ManifestDirEntry> = Vec::new();
+    let copy_result = copy_dir_recursive_with_hash(
         real_target,
         source_junction,
         real_target,
@@ -1673,6 +1971,9 @@ pub fn rollback_completed_migration(
         total_bytes,
         total_files,
         &tx,
+        &mut file_entries,
+        &mut junction_entries,
+        &mut empty_dir_entries,
     );
 
     if let Err(e) = copy_result {

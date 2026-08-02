@@ -65,6 +65,7 @@ export const useAppStore = defineStore('app', () => {
   const treeNodes = ref<TreeNode[]>([])
   const targetPath = ref('D:\\CDiskLinker_Moved')
   const manualSourcePath = ref('')
+  const fastMode = ref(false)
   const migrationStatus = ref<MigrationStatus>('Idle')
   const migrationPercent = ref(0)
   const migrationDetail = ref('')
@@ -257,6 +258,7 @@ export const useAppStore = defineStore('app', () => {
       await invoke('migrate_selected', {
         paths,
         targetDir: targetPath.value,
+        fastMode: fastMode.value,
       })
     } catch (e) {
       migrationStatus.value = 'Idle'
@@ -509,7 +511,7 @@ export const useAppStore = defineStore('app', () => {
   }
 
   return {
-    isAdmin, diskInfo, treeNodes, targetPath, manualSourcePath,
+    isAdmin, diskInfo, treeNodes, targetPath, manualSourcePath, fastMode,
     migrationStatus, migrationPercent, migrationDetail,
     migrationCurrentItem, migrationTotalItems, migrationFolder,
     migrationStage, migrationTotalFiles, migrationCopiedFiles,
