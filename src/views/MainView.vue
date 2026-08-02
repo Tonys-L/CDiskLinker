@@ -23,9 +23,28 @@
       </n-button>
     </div>
 
-    <!-- 左侧：目录树 -->
+    <!-- 左侧：目录树 / 大目录排行榜（可切换） -->
     <aside class="left-panel">
-      <TreeView />
+      <div class="view-switcher">
+        <button
+          class="switcher-btn"
+          :class="{ active: leftView === 'tree' }"
+          @click="leftView = 'tree'"
+        >
+          {{ t('view.tree') }}
+        </button>
+        <button
+          class="switcher-btn"
+          :class="{ active: leftView === 'largeDirs' }"
+          @click="leftView = 'largeDirs'"
+        >
+          {{ t('view.largeDirs') }}
+        </button>
+      </div>
+      <div class="left-panel-content">
+        <TreeView v-if="leftView === 'tree'" />
+        <LargeDirPanel v-else />
+      </div>
     </aside>
 
     <!-- 右侧：操作面板 -->
@@ -178,6 +197,7 @@ import { useAppStore } from '../stores/app'
 import { toggleLocale } from '../i18n'
 import DiskOverview from '../components/DiskOverview.vue'
 import TreeView from '../components/TreeView.vue'
+import LargeDirPanel from '../components/LargeDirPanel.vue'
 import JournalBar from '../components/JournalBar.vue'
 import LogConsole from '../components/LogConsole.vue'
 import WarningDialog from '../components/WarningDialog.vue'
@@ -185,6 +205,8 @@ import WarningDialog from '../components/WarningDialog.vue'
 const { t, locale } = useI18n()
 const store = useAppStore()
 const targetInfo = ref<{ total: string; free: string } | null>(null)
+// 左侧面板视图切换：目录树 / 大目录排行榜
+const leftView = ref<'tree' | 'largeDirs'>('tree')
 
 const canMigrate = computed(() => {
   const hasSource = store.selectedNodes.length > 0 || store.manualSourcePath.trim().length > 0
@@ -283,6 +305,46 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   background: var(--bg-primary);
+}
+
+/* 视图切换器：segmented control 风格 */
+.view-switcher {
+  display: flex;
+  padding: 8px 14px 6px;
+  gap: 4px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+.switcher-btn {
+  flex: 1;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.switcher-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--accent, #4dabf7);
+}
+
+.switcher-btn.active {
+  color: #fff;
+  background: var(--accent, #4dabf7);
+  border-color: var(--accent, #4dabf7);
+}
+
+/* 视图内容区：撑满剩余空间，内部组件用 height:100% 自行管理滚动 */
+.left-panel-content {
+  flex: 1;
+  overflow: hidden;
 }
 
 .right-panel {

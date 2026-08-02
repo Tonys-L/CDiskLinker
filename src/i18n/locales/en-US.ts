@@ -12,6 +12,10 @@ export default {
     zh: '中文',
     en: 'EN',
   },
+  view: {
+    tree: 'Tree',
+    largeDirs: 'Top Dirs',
+  },
   disk: {
     admin: 'Admin',
     notElevated: 'Not Elevated',

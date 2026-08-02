@@ -12,6 +12,10 @@ export default {
     zh: '中文',
     en: 'EN',
   },
+  view: {
+    tree: '目录树',
+    largeDirs: '大目录',
+  },
   disk: {
     admin: '管理员',
     notElevated: '未提权',
