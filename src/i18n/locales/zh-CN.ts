@@ -47,7 +47,7 @@ export default {
     selectedPrefix: '树中已选 ',
     selectedSuffix: ' 个目录',
     canFree: '可释放 {size}',
-    hint: '在左侧目录树中勾选，或手动输入路径',
+    hint: '在左侧目录树中点选目录，或手动输入路径',
   },
   target: {
     title: '迁移目标',

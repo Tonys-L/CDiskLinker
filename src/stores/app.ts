@@ -220,7 +220,9 @@ const updateInfo = shallowRef<Update | null>(null)
   }
 
   // 将大目录排行榜中的目录设为源目录（填入手动源路径输入框）
+  // 单选模式：清空树勾选，避免与 manualSourcePath 路径冲突
   function selectLargeDir(path: string) {
+    treeNodes.value.forEach(n => { n.is_selected = false })
     manualSourcePath.value = path
   }
 
@@ -252,10 +254,25 @@ const updateInfo = shallowRef<Update | null>(null)
     }
   }
 
+  // 单选模式：一次只能勾选一个目录，勾选时自动填入源输入框
+  // - 勾选新节点时，先取消所有其他勾选，再将路径填入 manualSourcePath
+  // - 取消勾选时，清空 manualSourcePath
+  // 这样左侧目录树与右侧源输入框保持同步，用户能直观看到选中了哪个路径
   function toggleNodeSelect(nodeId: number) {
     const node = treeNodes.value.find(n => n.id === nodeId)
-    if (node && node.rating !== 'Forbidden' && !node.is_junction) {
-      node.is_selected = !node.is_selected
+    if (!node || node.rating === 'Forbidden' || node.is_junction) return
+
+    if (node.is_selected) {
+      // 取消勾选：清空源输入框
+      node.is_selected = false
+      manualSourcePath.value = ''
+    } else {
+      // 单选：先取消所有其他勾选
+      treeNodes.value.forEach(n => { n.is_selected = false })
+      // 勾选当前节点
+      node.is_selected = true
+      // 自动填入源输入框
+      manualSourcePath.value = node.path
     }
   }
 

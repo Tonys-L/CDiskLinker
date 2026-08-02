@@ -47,7 +47,7 @@ export default {
     selectedPrefix: '',
     selectedSuffix: ' folder(s) selected',
     canFree: 'Can free {size}',
-    hint: 'Check folders in the tree, or enter path manually',
+    hint: 'Select a folder in the tree, or enter path manually',
   },
   target: {
     title: 'Target',

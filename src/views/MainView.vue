@@ -69,11 +69,9 @@
               clearable
             />
             <div v-if="store.selectedNodes.length > 0" class="source-summary">
-              <span>{{ t('source.selectedPrefix') }}<strong>{{ store.selectedNodes.length }}</strong>{{ t('source.selectedSuffix') }}</span>
-              <span class="sep">·</span>
               <span class="highlight">{{ t('source.canFree', { size: formatSize(store.totalSelectedSize) }) }}</span>
             </div>
-            <div v-else class="source-hint">{{ t('source.hint') }}</div>
+            <div v-else-if="!store.manualSourcePath.trim()" class="source-hint">{{ t('source.hint') }}</div>
           </div>
         </section>
 
