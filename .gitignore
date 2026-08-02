@@ -56,6 +56,3 @@ Thumbs.db
 # Alternate cargo target dir (used when AV blocks src-tauri/target)
 .build-target/
 
-# Trae IDE workspace
-.trae/
-
