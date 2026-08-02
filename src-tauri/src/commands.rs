@@ -447,3 +447,34 @@ pub fn check_crash_recovery() -> Result<CrashRecoveryResult, String> {
         Err(e) => Ok(CrashRecoveryResult { found: true, message: format!("自检异常: {}", e), stage }),
     }
 }
+
+/// 异步扫描 C 盘大目录排行榜，通过事件流式推送结果
+/// 递归构建目录树，自底向上累加大小，只遍历一次文件系统
+#[tauri::command]
+pub async fn scan_large_directories(
+    app: AppHandle,
+    max_depth: Option<i32>,
+    top_n: Option<usize>,
+) -> Result<(), String> {
+    let max_depth = max_depth.unwrap_or(4);
+    let top_n = top_n.unwrap_or(20);
+
+    let app_handle = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let _ = app_handle.emit("large-dirs-progress", serde_json::json!({
+            "status": "Scanning",
+            "detail_key": "log.largeDirScanning",
+        }));
+
+        let root = PathBuf::from("C:\\");
+        let dirs = scanner::scan_large_directories(&root, max_depth, top_n);
+
+        let _ = app_handle.emit("large-dirs-result", serde_json::json!({
+            "status": "Done",
+            "dirs": dirs,
+            "count": dirs.len(),
+        }));
+    });
+
+    Ok(())
+}

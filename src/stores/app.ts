@@ -69,6 +69,16 @@ export interface LockProcess {
   name: string
 }
 
+// 大目录排行榜条目（与后端 LargeDirEntry 对应）
+export interface LargeDirEntry {
+  path: string
+  name: string
+  size_bytes: number
+  size_text: string
+  rating: string  // "Safe" / "Warning" / "Forbidden"
+  depth: number
+}
+
 export type MigrationStatus = 'Idle' | 'Scanning' | 'Copying' | 'RollingBack' | 'Completed' | 'PendingConfirmation'
 
 // 将字节数格式化为人类可读大小（KB/MB/GB）
@@ -121,6 +131,9 @@ export const useAppStore = defineStore('app', () => {
   const confirmTargetPath = ref('')
   // 帮助对话框：首次启动自动弹出，或用户点击右上角 "?" 按钮触发
   const helpVisible = ref(false)
+  // 大目录排行榜：递归扫描 C 盘，按大小降序排列的 Top 20 目录
+  const largeDirs = ref<LargeDirEntry[]>([])
+  const largeDirsScanning = ref(false)
   // 更新对话框：发现新版本时弹出，包含版本号、更新日志、下载安装进度
   const updateVisible = ref(false)
   // Update 对象继承 Tauri Resource（含私有字段），必须用 shallowRef 避免 Vue 深度 Proxy 代理
@@ -190,6 +203,25 @@ const updateInfo = shallowRef<Update | null>(null)
       migrationStatus.value = 'Idle'
       addLog('error', `扫描失败: ${e}`, 'log.scanFailed', { error: translateError(e) })
     }
+  }
+
+  // 大目录排行榜：递归扫描 C 盘，按大小降序返回 Top 20
+  async function scanLargeDirs() {
+    if (largeDirsScanning.value) return
+    try {
+      largeDirsScanning.value = true
+      largeDirs.value = []
+      // 异步调用，结果通过事件返回
+      await invoke('scan_large_directories', { maxDepth: 4, topN: 20 })
+    } catch (e) {
+      largeDirsScanning.value = false
+      addLog('error', `大目录扫描失败: ${e}`, 'log.scanFailed', { error: translateError(e) })
+    }
+  }
+
+  // 将大目录排行榜中的目录设为源目录（填入手动源路径输入框）
+  function selectLargeDir(path: string) {
+    manualSourcePath.value = path
   }
 
   function toggleNodeExpand(nodeId: number) {
@@ -578,6 +610,22 @@ const updateInfo = shallowRef<Update | null>(null)
       }
     })
 
+    // 大目录排行榜扫描进度
+    await listen('large-dirs-progress', (event: any) => {
+      const data = event.payload as any
+      if (data.detail_key) {
+        addLog('info', i18n.global.t(data.detail_key), data.detail_key)
+      }
+    })
+
+    // 大目录排行榜扫描结果
+    await listen('large-dirs-result', (event: any) => {
+      const data = event.payload as any
+      largeDirs.value = (data.dirs || []) as LargeDirEntry[]
+      largeDirsScanning.value = false
+      addLog('success', `大目录扫描完成，发现 ${data.count || 0} 个大目录`, 'log.scanDone', { count: data.count || 0 })
+    })
+
     // 迁移进度（结构化 MigrationProgress）
     let lastLogDetail = ''
     let lastLogStage = ''
@@ -689,10 +737,12 @@ const updateInfo = shallowRef<Update | null>(null)
     showConfirmDialog, confirmSourcePath, confirmOldPath, confirmTargetPath,
     helpVisible, updateVisible, updateInfo, updateChecking,
     updateDownloading, updateProgress, updateProgressText, updateErrorMsg,
+    largeDirs, largeDirsScanning,
     selectedNodes, selectedSafeNodes, selectedWarningNodes,
     totalSelectedSize, canMigrate,
     formatSize,
     checkAdmin, elevateSelf, refreshDiskInfo, scanDisk,
+    scanLargeDirs, selectLargeDir,
     toggleNodeExpand, toggleNodeSelect,
     startMigration, doMigration, checkCrashRecovery, rollbackJournal, confirmJournalComplete,
     killLockingProcessesAndContinue, cancelMigrationDueToLocks,

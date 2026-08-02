@@ -172,6 +172,7 @@ export default {
     rbVerify: '正在用 Manifest 校验回滚数据完整性...',
     rbDeleteResidual: '校验通过，安全删除目标盘残留副本文件...',
     rbDone: '撤销回滚已成功完成！文件数据已完全还原至 C 盘原位置。',
+    largeDirScanning: '正在扫描 C 盘大目录...',
   },
   err: {
     noSourceSelected: '没有选定任何可安全移链的文件包目录',
@@ -213,5 +214,17 @@ export default {
     installing: '安装中...',
     installFail: '安装失败',
     noUpdate: '暂无更新',
+  },
+  largeDir: {
+    title: '大目录排行榜',
+    scan: '扫描大目录',
+    rescanning: '扫描中...',
+    empty: '点击"扫描大目录"查看占用最多的目录',
+    rank: '排名',
+    path: '路径',
+    size: '大小',
+    rating: '评级',
+    select: '设为源目录',
+    selected: '已设为源',
   },
 }

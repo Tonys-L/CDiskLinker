@@ -41,6 +41,7 @@ pub fn run() {
             commands::confirm_delete_source,
             commands::confirm_journal_complete,
             commands::rollback_migration_instant,
+            commands::scan_large_directories,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -171,6 +171,7 @@ export default {
     rbVerify: 'Verifying rollback data integrity with Manifest...',
     rbDeleteResidual: 'Verification passed, safely deleting residual copy files on target drive...',
     rbDone: 'Rollback successfully completed! File data fully restored to C drive original location.',
+    largeDirScanning: 'Scanning C drive for large directories...',
   },
   err: {
     noSourceSelected: 'No safely migratable package directory selected',
@@ -212,5 +213,17 @@ export default {
     installing: 'Installing...',
     installFail: 'Installation failed',
     noUpdate: 'No update available',
+  },
+  largeDir: {
+    title: 'Large Directory Ranking',
+    scan: 'Scan Large Dirs',
+    rescanning: 'Scanning...',
+    empty: 'Click "Scan Large Dirs" to find the biggest directories',
+    rank: 'Rank',
+    path: 'Path',
+    size: 'Size',
+    rating: 'Rating',
+    select: 'Set as source',
+    selected: 'Set as source',
   },
 }

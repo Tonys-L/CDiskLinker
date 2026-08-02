@@ -184,6 +184,135 @@ pub fn scan_subdirectories(parent_path: &Path, depth: i32) -> Vec<ScanEntry> {
     results
 }
 
+// === 大目录排行榜 ===
+
+/// 大目录扫描结果条目（推送给前端）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LargeDirEntry {
+    pub path: String,
+    pub name: String,
+    pub size_bytes: u64,
+    pub size_text: String,
+    pub rating: String,
+    pub depth: i32,
+}
+
+/// 内部目录树节点（自底向上累加大小，只需遍历一次文件系统）
+struct DirTreeNode {
+    path: PathBuf,
+    name: String,
+    direct_size: u64,   // 直接子文件大小之和
+    total_size: u64,    // 含子目录的总大小
+    rating: DirectoryRating,
+    depth: i32,
+    children: Vec<DirTreeNode>,
+}
+
+/// 递归扫描目录树，自底向上累加大小
+/// - 跳过 Junction（is_dir 返回 false，不会被误入）
+/// - 跳过 Forbidden 目录
+/// - 限制最大深度，避免过深递归
+fn build_dir_tree(path: &Path, depth: i32, max_depth: i32) -> Option<DirTreeNode> {
+    if depth > max_depth {
+        return None;
+    }
+
+    // Forbidden 目录直接跳过
+    if is_forbidden_path(path) {
+        return None;
+    }
+
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned());
+
+    let rating = if is_warning_path(path) {
+        DirectoryRating::Warning
+    } else {
+        DirectoryRating::Safe
+    };
+
+    let mut node = DirTreeNode {
+        path: path.to_path_buf(),
+        name,
+        direct_size: 0,
+        total_size: 0,
+        rating,
+        depth,
+        children: Vec::new(),
+    };
+
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            if let Ok(metadata) = entry.metadata() {
+                if metadata.is_file() {
+                    // 文件：累加到直接大小
+                    node.direct_size += metadata.len();
+                } else if metadata.is_dir() {
+                    // 普通目录：递归扫描（Junction 的 is_dir 返回 false，自动跳过）
+                    if let Some(child) = build_dir_tree(&entry.path(), depth + 1, max_depth) {
+                        node.children.push(child);
+                    }
+                }
+                // Junction 既不是 file 也不是 dir，自动跳过
+            }
+        }
+    }
+
+    // 自底向上累加总大小
+    node.total_size = node.direct_size + node.children.iter().map(|c| c.total_size).sum::<u64>();
+
+    Some(node)
+}
+
+/// 从目录树中收集所有目录，返回扁平列表
+fn collect_dirs_from_tree(node: &DirTreeNode, result: &mut Vec<LargeDirEntry>) {
+    result.push(LargeDirEntry {
+        path: node.path.to_string_lossy().into_owned(),
+        name: node.name.clone(),
+        size_bytes: node.total_size,
+        size_text: format_size(node.total_size),
+        rating: match node.rating {
+            DirectoryRating::Safe => "Safe".to_string(),
+            DirectoryRating::Warning => "Warning".to_string(),
+            DirectoryRating::Forbidden => "Forbidden".to_string(),
+        },
+        depth: node.depth,
+    });
+
+    for child in &node.children {
+        collect_dirs_from_tree(child, result);
+    }
+}
+
+/// 扫描 C 盘大目录，返回按大小降序排列的 Top N 目录
+/// 高效实现：递归构建目录树，自底向上累加大小，只遍历一次文件系统
+pub fn scan_large_directories(root: &Path, max_depth: i32, top_n: usize) -> Vec<LargeDirEntry> {
+    let mut all_dirs = Vec::new();
+
+    // 扫描根目录下的子目录
+    if let Ok(entries) = fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Ok(metadata) = entry.metadata() {
+                // 只处理普通目录（Junction 的 is_dir 返回 false，会被跳过）
+                if metadata.is_dir() {
+                    if let Some(tree) = build_dir_tree(&path, 1, max_depth) {
+                        collect_dirs_from_tree(&tree, &mut all_dirs);
+                    }
+                }
+            }
+        }
+    }
+
+    // 按大小降序排序
+    all_dirs.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+
+    // 取 Top N
+    all_dirs.into_iter().take(top_n).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
