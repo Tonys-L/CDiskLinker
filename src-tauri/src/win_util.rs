@@ -80,11 +80,22 @@ pub fn elevate_self() -> Result<(), String> {
 /// - `source`: 源路径 (e.g. C:\Games\Steam)
 /// - `target`: 迁移后的真实目录路径 (e.g. D:\Games\Steam)
 pub fn create_junction(source: &Path, target: &Path) -> Result<(), String> {
-    // 1. 如果源路径已存在，先强制删除（mklink /J 要求源路径不存在）
+    // 1. 如果源路径已存在，先删除（mklink /J 要求源路径不存在）
+    // 关键安全检查：如果源路径是 Junction，必须只删链接点，绝不能跟入！
+    // std::fs::remove_dir_all 会跟随 Junction 删除目标真实数据，造成不可逆损失。
     if source.exists() {
-        // 使用 remove_dir_all 确保彻底删除（目录可能非空或有残留）
-        std::fs::remove_dir_all(source)
-            .map_err(|e| format!("删除已存在的源路径失败: {}", e))?;
+        if is_junction(source) {
+            // Junction：只删链接点（remove_dir 对 Junction 安全，不跟入）
+            std::fs::remove_dir(source)
+                .map_err(|e| format!("删除已存在的 Junction 链接点失败: {}", e))?;
+        } else if source.is_dir() {
+            // 普通目录：递归删除，但遇到子 Junction 只删链接点不跟入
+            remove_dir_all_safe(source)?;
+        } else {
+            // 普通文件
+            std::fs::remove_file(source)
+                .map_err(|e| format!("删除已存在的源文件失败: {}", e))?;
+        }
     }
 
     // 2. 确保源路径的父目录存在
@@ -115,6 +126,39 @@ pub fn create_junction(source: &Path, target: &Path) -> Result<(), String> {
         let stderr = encoding_rs::GBK.decode(&output.stderr).0;
         Err(format!("mklink /J 失败: {} {}", stdout.trim(), stderr.trim()))
     }
+}
+
+/// 安全递归删除目录（Junction 安全版）
+///
+/// 与 std::fs::remove_dir_all 的区别：
+/// 遇到子目录中的 Junction 时只删除链接点，绝不跟入目标。
+/// std::fs::remove_dir_all 会跟随 Junction 删除目标真实数据，造成不可逆损失。
+fn remove_dir_all_safe(dir: &Path) -> Result<(), String> {
+    fn remove_recursive(path: &Path) -> Result<(), String> {
+        // Junction：只删链接点，不跟入（remove_dir 对 Junction 安全）
+        if is_junction(path) {
+            std::fs::remove_dir(path)
+                .map_err(|e| format!("删除 Junction 链接点失败 {:?}: {}", path, e))?;
+        } else if path.is_symlink() {
+            // 文件级符号链接：删除链接本身
+            std::fs::remove_file(path)
+                .map_err(|e| format!("删除符号链接失败 {:?}: {}", path, e))?;
+        } else if path.is_dir() {
+            for entry in std::fs::read_dir(path)
+                .map_err(|e| format!("读取目录失败 {:?}: {}", path, e))?
+            {
+                let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
+                remove_recursive(&entry.path())?;
+            }
+            std::fs::remove_dir(path)
+                .map_err(|e| format!("删除目录失败 {:?}: {}", path, e))?;
+        } else {
+            std::fs::remove_file(path)
+                .map_err(|e| format!("删除文件失败 {:?}: {}", path, e))?;
+        }
+        Ok(())
+    }
+    remove_recursive(dir)
 }
 
 /// 删除一个目录联接 (Junction) 点占位符
@@ -436,14 +480,123 @@ pub fn get_disk_space_info(drive: &str) -> Result<(u64, u64), String> {
     }
 }
 
-/// 检测给定路径是否为 Windows 目录联接（Junction）或符号链接重解析点
+/// 判断路径是否为 NTFS 目录联接 (Junction)
 ///
-/// 实现说明：Rust std 的 `file_type().is_symlink()` 在 Windows 上只识别
-/// `IO_REPARSE_TAG_SYMLINK`（符号链接），不识别 `IO_REPARSE_TAG_MOUNT_POINT`
-/// （Junction）。因此改用 `GetFileAttributesW` 检查 `FILE_ATTRIBUTE_REPARSE_POINT`
-/// (0x400) 属性位，覆盖 Junction 与 Symlink 两类重解析点。
+/// 精确检测：不仅检查 FILE_ATTRIBUTE_REPARSE_POINT 属性，
+/// 还通过 DeviceIoControl + FSCTL_GET_REPARSE_POINT 读取重解析标签，
+/// 仅当标签为 IO_REPARSE_TAG_MOUNT_POINT 时返回 true。
+///
+/// # 重解析标签值依据
+///
+/// 参考:
+/// - 标签定义: <https://learn.microsoft.com/en-us/windows/win32/fileio/reparse-point-tags>
+/// - 协议规范: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/c8e77b37-3909-4fe6-a4ea-2b9d423b1ee4>
+/// - Junction 数据结构: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ca069dad-ed16-42aa-b057-b6b207f447cc>
+///
+/// | 标签值           | 常量名                          | 含义               | 来源 |
+/// |-----------------|--------------------------------|--------------------|------|
+/// | 0xA0000003      | IO_REPARSE_TAG_MOUNT_POINT     | NTFS Junction（本函数检测的目标）| MS-FSCC 2.1.2.5 |
+/// | 0xA000000C      | IO_REPARSE_TAG_SYMLINK         | 符号链接            | MS-FSCC 2.1.2.1 |
+/// | 0x80000014      | IO_REPARSE_TAG_NFS             | NFS 符号链接         | MS-FSCC 2.1.2.1 |
+/// | 0x80000023      | （未公开）                       | 应用占位符（如 JetBrains Toolbox cache）| fsutil 实测 |
+/// | 0x9000001A      | IO_REPARSE_TAG_CLOUD           | 云文件占位符           | WinNT.h |
+///
+/// 高 2 位含义：10 = Microsoft 定义，01 = 第三方定义；
+/// Bit 29 = 1 表示名称代理（目标为另一个命名实体，如 Junction/Symlink）。
+///
+/// 仅 IO_REPARSE_TAG_MOUNT_POINT 是 Junction，其他重解析点不应按 Junction 处理。
 pub fn is_junction(path: &std::path::Path) -> bool {
+    use windows::Win32::Storage::FileSystem::{
+        GetFileAttributesW, CreateFileW, FILE_FLAGS_AND_ATTRIBUTES,
+        FILE_CREATION_DISPOSITION, FILE_SHARE_MODE,
+    };
+    use windows::Win32::System::IO::DeviceIoControl;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA0000003;
+    const GENERIC_READ: u32 = 0x80000000;
+    // FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT
+    const OPEN_REPARSE_POINT_FLAGS: FILE_FLAGS_AND_ATTRIBUTES =
+        FILE_FLAGS_AND_ATTRIBUTES(0x02000000 | 0x00200000);
+    const OPEN_EXISTING: FILE_CREATION_DISPOSITION = FILE_CREATION_DISPOSITION(3);
+    // FSCTL_GET_REPARSE_POINT CTL_CODE
+    const FSCTL_GET_REPARSE_POINT: u32 = 0x000900A8;
+
+    let path_w = match U16CString::from_os_str(path.as_os_str()) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+
+    unsafe {
+        // 快速预检：无 REPARSE_POINT 属性则直接返回 false
+        let attrs = GetFileAttributesW(PCWSTR(path_w.as_ptr()));
+        if attrs == u32::MAX || (attrs & FILE_ATTRIBUTE_REPARSE_POINT) == 0 {
+            return false;
+        }
+
+        // 打开重解析点本身（不跟随目标）
+        let handle = CreateFileW(
+            PCWSTR(path_w.as_ptr()),
+            GENERIC_READ,
+            FILE_SHARE_MODE(0x01 | 0x02), // FILE_SHARE_READ | FILE_SHARE_WRITE
+            None,
+            OPEN_EXISTING,
+            OPEN_REPARSE_POINT_FLAGS,
+            HANDLE::default(),
+        );
+
+        let handle = match handle {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+
+        if handle.is_invalid() {
+            return false;
+        }
+
+        // 分配足够大的缓冲区接收 REPARSE_DATA_BUFFER
+        let mut buffer = [0u8; 1024];
+        let mut bytes_returned = 0u32;
+
+        let result = DeviceIoControl(
+            handle,
+            FSCTL_GET_REPARSE_POINT,
+            None,
+            0,
+            Some(buffer.as_mut_ptr() as *mut _),
+            buffer.len() as u32,
+            Some(&mut bytes_returned),
+            None,
+        );
+
+        let _ = CloseHandle(handle);
+
+        if result.is_err() {
+            return false;
+        }
+
+        // REPARSE_DATA_BUFFER 前四个字节是 ReparseTag
+        if bytes_returned < 4 {
+            return false;
+        }
+
+        let reparse_tag = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]);
+        reparse_tag == IO_REPARSE_TAG_MOUNT_POINT
+    }
+}
+
+/// 快速检测路径是否具有 REPARSE_POINT 属性（不区分重解析点类型）
+///
+/// 用途：在 is_junction() 返回 false 后，二次过滤非 Junction 重解析点。
+/// 这些条目（如 JetBrains cache tag 0x80000023、云占位符等）无法通过 File::open 访问，
+/// 必须跳过，否则会遇到 os error 1920 (ERROR_CANT_ACCESS_FILE)。
+///
+/// 性能：仅调用一次 GetFileAttributesW（内核直接读 MFT，微秒级），不打开文件句柄。
+pub fn is_reparse_point(path: &std::path::Path) -> bool {
     use windows::Win32::Storage::FileSystem::GetFileAttributesW;
+    use windows::core::PCWSTR;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
     let path_w = match U16CString::from_os_str(path.as_os_str()) {
         Ok(s) => s,
@@ -452,12 +605,7 @@ pub fn is_junction(path: &std::path::Path) -> bool {
 
     unsafe {
         let attrs = GetFileAttributesW(PCWSTR(path_w.as_ptr()));
-        // INVALID_FILE_ATTRIBUTES == 0xFFFFFFFF（-1 转 u32）
-        if attrs == u32::MAX {
-            return false;
-        }
-        // FILE_ATTRIBUTE_REPARSE_POINT = 0x400
-        (attrs & 0x400) != 0
+        attrs != u32::MAX && (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0
     }
 }
 
@@ -466,6 +614,8 @@ pub fn is_junction(path: &std::path::Path) -> bool {
 /// 使用 fsutil reparsepoint query 命令解析 Junction 目标。
 /// 返回 Junction 指向的绝对路径（如 `C:\Users\xxx\AppData\Local\Kingsoft\cloud`）。
 /// 如果路径不是 Junction 或解析失败，返回错误。
+///
+/// 支持中文 Windows（"打印名称:"）和英文 Windows（"Print Name:"）两种输出格式。
 pub fn read_junction_target(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
     let path_str = path.to_str()
         .ok_or_else(|| "路径包含无效 UTF-8 字符".to_string())?;
@@ -480,21 +630,30 @@ pub fn read_junction_target(path: &std::path::Path) -> Result<std::path::PathBuf
         return Err(format!("fsutil reparsepoint query 失败: 路径可能不是重解析点"));
     }
 
-    // 输出包含 "打印名称:              F:\.c_cache\Kingsoft" 这样的行
+    // fsutil 输出格式（中文 Windows）：
+    //   打印名称:              F:\.c_cache\Kingsoft
+    // fsutil 输出格式（英文 Windows）：
+    //   Print Name:            F:\.c_cache\Kingsoft
+    // 两种格式均尝试解析
     let stdout = encoding_rs::GBK.decode(&output.stdout).0;
+
+    // 定义可能的标签（中文 + 英文）
+    let labels = ["打印名称:", "Print Name:"];
+
     for line in stdout.lines() {
-        if line.contains("打印名称:") {
-            // 提取冒号后面的路径（去除前导空格）
-            if let Some(idx) = line.find("打印名称:") {
-                let target = line[idx + "打印名称:".len()..].trim();
-                if !target.is_empty() {
-                    return Ok(std::path::PathBuf::from(target));
+        for label in &labels {
+            if line.contains(label) {
+                if let Some(idx) = line.find(label) {
+                    let target = line[idx + label.len()..].trim();
+                    if !target.is_empty() {
+                        return Ok(std::path::PathBuf::from(target));
+                    }
                 }
             }
         }
     }
 
-    Err("无法从 fsutil 输出中解析 Junction 目标路径".to_string())
+    Err("无法从 fsutil 输出中解析 Junction 目标路径（不支持当前系统语言格式）".to_string())
 }
 
 /// 检测指定盘根路径（如 "D:\\"）的文件系统是否为 NTFS

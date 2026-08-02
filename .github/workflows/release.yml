@@ -30,9 +30,14 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater 签名密钥：用于生成 .sig 签名文件，配合 latest.json 实现自动更新
+          # 私钥与密码需在仓库 Settings → Secrets and variables → Actions 中配置
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'CDiskLinker ${{ github.ref_name }}'
           releaseDraft: false
           prerelease: false
+          # tauri-action 会自动上传 latest.json 与 .sig 文件到 Release 资产
           args: --target x86_64-pc-windows-msvc

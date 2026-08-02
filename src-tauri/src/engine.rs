@@ -23,6 +23,12 @@ pub struct MigrationProgress {
     pub copied_size: u64,
     pub current_file: String,
     pub detail: String,
+    /// i18n key：命中时前端按当前语言翻译 detail（detail 字段保留中文作为回退）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail_key: Option<String>,
+    /// i18n 插值参数（JSON 对象，与 detail_key 配合使用）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail_params: Option<serde_json::Value>,
     /// 以下字段仅在 PendingConfirmation 阶段填充，用于前端确认对话框
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_path: Option<String>,
@@ -43,6 +49,28 @@ impl MigrationProgress {
             copied_size: 0,
             current_file: String::new(),
             detail: detail.to_string(),
+            detail_key: None,
+            detail_params: None,
+            source_path: None,
+            renamed_source_path: None,
+            final_target_path: None,
+        }
+    }
+
+    /// 创建带 i18n key 的 MigrationProgress（detail 作为中文回退，前端优先用 key 翻译）
+    fn new_keyed(stage: &str, progress: f32, detail: &str,
+                 key: &str, params: serde_json::Value) -> Self {
+        Self {
+            stage: stage.to_string(),
+            progress,
+            total_files: 0,
+            copied_files: 0,
+            total_size: 0,
+            copied_size: 0,
+            current_file: String::new(),
+            detail: detail.to_string(),
+            detail_key: Some(key.to_string()),
+            detail_params: if params.is_null() { None } else { Some(params) },
             source_path: None,
             renamed_source_path: None,
             final_target_path: None,
@@ -63,6 +91,8 @@ impl MigrationProgress {
             copied_size,
             current_file: current_file.to_string(),
             detail: detail.to_string(),
+            detail_key: None,
+            detail_params: None,
             source_path: None,
             renamed_source_path: None,
             final_target_path: None,
@@ -206,6 +236,13 @@ impl Manifest {
     }
 
     /// 递归收集文件、Junction、空目录
+    ///
+    /// 关键：Junction 检测必须在 entry.metadata() 之前进行。
+    /// 原因：Rust 标准库 DirEntry::metadata().is_dir() 对 Junction 返回 false
+    /// （Junction 带 FILE_ATTRIBUTE_REPARSE_POINT 属性，is_dir() 会排除此类条目），
+    /// 若将 is_dir() 作为前置条件，Junction 分支永远不执行。
+    /// 正确做法：先用 is_junction() 检测重解析点，再用 symlink_metadata().is_dir()
+    /// 区分目录级重解析点（Junction）和文件级重解析点（符号链接）。
     fn collect_inner(
         base: &Path,
         current: &Path,
@@ -218,6 +255,36 @@ impl Manifest {
         if let Ok(entries) = fs::read_dir(current) {
             for entry in entries.flatten() {
                 let path = entry.path();
+
+                // ===== Junction 检测（必须在 metadata 检查之前）=====
+                // is_junction() 使用 GetFileAttributesW 检测重解析点，不依赖 is_dir()
+                // 需进一步用 symlink_metadata().is_dir() 排除文件级符号链接
+                if win_util::is_junction(&path) {
+                    // 区分目录级重解析点（Junction）和文件级符号链接
+                    // symlink_metadata 不跟随重解析点，返回链接本身属性
+                    let is_dir_reparse = fs::symlink_metadata(&path)
+                        .map(|m| m.is_dir())
+                        .unwrap_or(false);
+
+                    if is_dir_reparse {
+                        // 目录级重解析点 = Junction：记录目标路径，不跟入
+                        has_entries = true;
+                        let rel = path.strip_prefix(base)
+                            .map_err(|e| format!("路径前缀剥离失败: {}", e))?
+                            .to_string_lossy()
+                            .replace('\\', "/");
+                        let target = win_util::read_junction_target(&path)?
+                            .to_string_lossy().to_string();
+                        junctions.push(ManifestJunctionEntry {
+                            relative_path: rel,
+                            target,
+                        });
+                        continue;
+                    }
+                    // 文件级重解析点（符号链接）：跳过
+                    continue;
+                }
+
                 if let Ok(metadata) = entry.metadata() {
                     has_entries = true;
 
@@ -227,18 +294,13 @@ impl Manifest {
                         .to_string_lossy()
                         .replace('\\', "/");
 
-                    // Junction：记录目标路径，不跟入
-                    if metadata.is_dir() && win_util::is_junction(&path) {
-                        let target = win_util::read_junction_target(&path)?
-                            .to_string_lossy().to_string();
-                        junctions.push(ManifestJunctionEntry {
-                            relative_path: rel,
-                            target,
-                        });
+                    // 非 Junction 重解析点（云占位符、JetBrains cache 等）：跳过
+                    // is_junction 已排除 Junction，此处捕获剩余的 REPARSE_POINT 条目
+                    if win_util::is_reparse_point(&path) {
                         continue;
                     }
 
-                    // 文件级符号链接：跳过
+                    // 文件级符号链接：跳过（Junction 已在上方处理）
                     if metadata.file_type().is_symlink() {
                         continue;
                     }
@@ -248,9 +310,6 @@ impl Manifest {
                         Self::collect_inner(base, &path, files, junctions, empty_dirs)?;
                     } else {
                         // 普通文件：计算完整 SHA256 + 取实时文件大小
-                        // 关键：先计算 SHA256（读取文件内容），再获取文件大小
-                        // 这样确保 size 和 sha256 对应同一时刻的文件内容
-                        // 使用 fs::metadata（实时查询）而非 entry.metadata（目录项缓存）
                         let (sha256, actual_size) = calculate_full_sha256_with_size(&path)?;
                         files.push(ManifestFileEntry {
                             relative_path: rel,
@@ -312,6 +371,9 @@ impl Manifest {
     }
 
     /// 递归收集文件、Junction、空目录（仅大小版，不计算 SHA256）
+    ///
+    /// Junction 检测逻辑与 collect_inner 相同：先用 is_junction() 检测，
+    /// 再用 symlink_metadata().is_dir() 区分目录级和文件级重解析点。
     fn collect_inner_size_only(
         base: &Path,
         current: &Path,
@@ -324,6 +386,32 @@ impl Manifest {
         if let Ok(entries) = fs::read_dir(current) {
             for entry in entries.flatten() {
                 let path = entry.path();
+
+                // ===== Junction 检测（必须在 metadata 检查之前）=====
+                if win_util::is_junction(&path) {
+                    let is_dir_reparse = fs::symlink_metadata(&path)
+                        .map(|m| m.is_dir())
+                        .unwrap_or(false);
+
+                    if is_dir_reparse {
+                        // 目录级重解析点 = Junction：记录目标路径，不跟入
+                        has_entries = true;
+                        let rel = path.strip_prefix(base)
+                            .map_err(|e| format!("路径前缀剥离失败: {}", e))?
+                            .to_string_lossy()
+                            .replace('\\', "/");
+                        let target = win_util::read_junction_target(&path)?
+                            .to_string_lossy().to_string();
+                        junctions.push(ManifestJunctionEntry {
+                            relative_path: rel,
+                            target,
+                        });
+                        continue;
+                    }
+                    // 文件级重解析点（符号链接）：跳过
+                    continue;
+                }
+
                 if let Ok(metadata) = entry.metadata() {
                     has_entries = true;
 
@@ -333,18 +421,12 @@ impl Manifest {
                         .to_string_lossy()
                         .replace('\\', "/");
 
-                    // Junction：记录目标路径，不跟入
-                    if metadata.is_dir() && win_util::is_junction(&path) {
-                        let target = win_util::read_junction_target(&path)?
-                            .to_string_lossy().to_string();
-                        junctions.push(ManifestJunctionEntry {
-                            relative_path: rel,
-                            target,
-                        });
+                    // 非 Junction 重解析点（云占位符、JetBrains cache 等）：跳过
+                    if win_util::is_reparse_point(&path) {
                         continue;
                     }
 
-                    // 文件级符号链接：跳过
+                    // 文件级符号链接：跳过（Junction 已在上方处理）
                     if metadata.file_type().is_symlink() {
                         continue;
                     }
@@ -354,7 +436,6 @@ impl Manifest {
                         Self::collect_inner_size_only(base, &path, files, junctions, empty_dirs)?;
                     } else {
                         // 普通文件：仅取大小，不计算 SHA256
-                        // 使用 fs::metadata（实时查询）而非 entry.metadata（目录项缓存）
                         let actual_size = fs::metadata(&path)
                             .map(|m| m.len())
                             .unwrap_or(metadata.len());
@@ -650,6 +731,10 @@ fn collect_files_inner(base_dir: &Path, current_dir: &Path, list: &mut Vec<(Path
                 if metadata.is_dir() && win_util::is_junction(&path) {
                     continue; // Junction：不跟入，不统计其目标内容
                 }
+                // 非 Junction 重解析点：跳过（无法访问）
+                if win_util::is_reparse_point(&path) {
+                    continue;
+                }
                 if metadata.file_type().is_symlink() {
                     continue; // 文件级符号链接：跳过
                 }
@@ -686,9 +771,11 @@ pub fn pre_scan_migration(source: &Path) -> Result<(usize, u64), String> {
 fn remove_dir_all_with_detail(dir: &Path) -> Result<(), (String, Option<PathBuf>)> {
     fn remove_recursive(path: &Path) -> Result<(), (String, Option<PathBuf>)> {
         // 关键：先检测 Junction！
-        // Rust std 的 is_symlink() 在 Windows 上不识别 Junction，
-        // 如果不先检测，Junction 会被当作普通目录跟入，误删目标数据。
-        if path.is_dir() && win_util::is_junction(path) {
+        // is_junction() 已通过 DeviceIoControl 精确检测 IO_REPARSE_TAG_MOUNT_POINT，
+        // 不再依赖 is_dir()（Rust 标准库 is_dir() 对 Junction 返回 false）。
+        // 必须先检测 Junction 再检测 is_dir()，否则 Junction 会被当作普通目录跟入，
+        // 导致 remove_dir_all 删除 Junction 指向的真实目标数据。
+        if win_util::is_junction(path) {
             // Junction：只删链接点，不跟入目标（remove_dir 对 Junction 安全）
             fs::remove_dir(path).map_err(|e| (format!("{}", e), Some(path.to_path_buf())))?;
         } else if path.is_symlink() {
@@ -759,6 +846,121 @@ fn detect_locks_with_fallback(dir: &Path) -> String {
     "，未检测到占用进程或锁定文件".to_string()
 }
 
+/// 单文件拷贝 + 流式 SHA256 计算，独立函数避免 256KB buffer 参与递归栈帧
+///
+/// 栈帧分析：此函数包含 256KB 的拷贝缓冲区，如果内联到递归函数中，
+/// 每层递归都携带 256KB 栈消耗（depth=5 即 1.5MB，depth=32 即 8MB 超栈）。
+/// 提取为独立函数后，256KB 栈帧在函数返回时立即释放，递归深度不再受缓冲区大小限制。
+fn copy_single_file_with_hash(
+    src_path: &Path,
+    dst_path: &Path,
+    base_src: &Path,
+    copied_bytes: &mut u64,
+    copied_files: &mut usize,
+    total_bytes: u64,
+    total_files: usize,
+    tx: &Sender<MigrationProgress>,
+    file_entries: &mut Vec<ManifestFileEntry>,
+    depth: u32,
+    last_send: &mut std::time::Instant,
+) -> Result<(), String> {
+    let file_name = src_path.strip_prefix(base_src)
+        .unwrap_or(src_path)
+        .to_string_lossy()
+        .to_string();
+    let rel_path = file_name.replace('\\', "/");
+
+    eprintln!("[copy] depth={} file={}", depth, file_name);
+
+    let mut src_file = File::open(src_path)
+        .map_err(|e| format!("无法打开源文件 {:?}: {}", src_path, e))?;
+    let mut dst_file = File::create(dst_path)
+        .map_err(|e| format!("无法创建目标文件 {:?}: {}", dst_path, e))?;
+
+    // 流式 SHA256：边读边算，避免事后二次读盘
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 256 * 1024]; // 256KB 拷贝块缓冲（提升吞吐）
+    let mut actual_size: u64 = 0;
+    loop {
+        let bytes_read = src_file.read(&mut buffer)
+            .map_err(|e| format!("读取源文件失败: {}", e))?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+        dst_file.write_all(&buffer[..bytes_read])
+            .map_err(|e| format!("写入目标文件失败: {}", e))?;
+
+        *copied_bytes += bytes_read as u64;
+        actual_size += bytes_read as u64;
+
+        // 节流：至少 100ms 发一次
+        let should_send = last_send.elapsed().as_millis() >= 100;
+        if should_send {
+            let progress = if total_bytes > 0 {
+                (*copied_bytes as f32 / total_bytes as f32) * 80.0 + 10.0
+            } else {
+                90.0
+            };
+
+            let _ = tx.send(MigrationProgress {
+                stage: "Copying".to_string(),
+                progress,
+                total_files,
+                copied_files: *copied_files,
+                total_size: total_bytes,
+                copied_size: *copied_bytes,
+                current_file: file_name.clone(),
+                detail: format!("复制中: {} ({}/{})", file_name, *copied_files + 1, total_files),
+                detail_key: Some("log.copying".into()),
+                detail_params: Some(serde_json::json!({
+                    "file": file_name, "copied": *copied_files + 1, "total": total_files
+                })),
+                source_path: None,
+                renamed_source_path: None,
+                final_target_path: None,
+            });
+            *last_send = std::time::Instant::now();
+        }
+    }
+    dst_file.flush().map_err(|e| format!("数据落盘同步失败: {}", e))?;
+    *copied_files += 1;
+
+    let sha256 = format!("{:x}", hasher.finalize());
+    file_entries.push(ManifestFileEntry {
+        relative_path: rel_path,
+        size: actual_size,
+        sha256,
+    });
+
+    // 每个文件复制完成后也发一次（确保小文件有日志）
+    let progress = if total_bytes > 0 {
+        (*copied_bytes as f32 / total_bytes as f32) * 80.0 + 10.0
+    } else {
+        90.0
+    };
+    let _ = tx.send(MigrationProgress {
+        stage: "Copying".to_string(),
+        progress,
+        total_files,
+        copied_files: *copied_files,
+        total_size: total_bytes,
+        copied_size: *copied_bytes,
+        current_file: file_name.clone(),
+        detail: format!("已复制: {} ({}/{})", file_name, *copied_files, total_files),
+        detail_key: Some("log.copied".into()),
+        detail_params: Some(serde_json::json!({
+            "file": file_name, "copied": *copied_files, "total": total_files
+        })),
+        source_path: None,
+        renamed_source_path: None,
+        final_target_path: None,
+    });
+    *last_send = std::time::Instant::now();
+
+    Ok(())
+}
+
 /// 递归物理文件拷贝核心逻辑（流式哈希版），实时发送结构化进度（带节流）
 ///
 /// 与旧版 copy_dir_recursive 的区别：
@@ -766,7 +968,10 @@ fn detect_locks_with_fallback(dir: &Path) -> String {
 /// 2. 拷贝缓冲从 64KB 提升到 256KB
 /// 3. 拷贝过程中同步收集 Manifest 条目（file/junction/empty_dir），供后续校验使用
 ///
-/// base_src 为源根目录，用于计算文件的相对路径以在日志中显示完整层级
+/// 栈帧安全：文件拷贝的 256KB buffer 已提取到 copy_single_file_with_hash，
+/// 本函数每层递归栈帧约 200-500 字节（PathBuf + DirEntry），8MB 栈可支撑 16000+ 层递归。
+const MAX_COPY_DEPTH: u32 = 128;
+
 fn copy_dir_recursive_with_hash(
     src: &Path,
     dst: &Path,
@@ -779,7 +984,17 @@ fn copy_dir_recursive_with_hash(
     file_entries: &mut Vec<ManifestFileEntry>,
     junction_entries: &mut Vec<ManifestJunctionEntry>,
     empty_dir_entries: &mut Vec<ManifestDirEntry>,
+    depth: u32,
 ) -> Result<(), String> {
+    if depth > MAX_COPY_DEPTH {
+        let rel = src.strip_prefix(base_src)
+            .unwrap_or(src)
+            .to_string_lossy();
+        return Err(format!(
+            "目录层级过深（超过 {} 层）：{:?}，可能存在循环联接",
+            MAX_COPY_DEPTH, rel
+        ));
+    }
     if !dst.exists() {
         fs::create_dir_all(dst)
             .map_err(|e| format!("无法在目标位置创建子目录: {}", e))?;
@@ -830,6 +1045,10 @@ fn copy_dir_recursive_with_hash(
                                 copied_size: *copied_bytes,
                                 current_file: String::new(),
                                 detail: format!("重建联接: {} -> {:?}", rel, junction_target),
+                                detail_key: Some("log.rebuildJunction".into()),
+                                detail_params: Some(serde_json::json!({
+                                    "rel": rel, "target": junction_target.to_string_lossy()
+                                })),
                                 source_path: None,
                                 renamed_source_path: None,
                                 final_target_path: None,
@@ -842,101 +1061,29 @@ fn copy_dir_recursive_with_hash(
                     continue; // Junction 已重建，跳过递归
                 }
 
+                // 非 Junction 重解析点（云占位符、JetBrains cache 等）：
+                // 这些条目无法通过 File::open 访问（os error 1920），必须跳过
+                // is_junction 已排除 Junction 情况，此处检测剩余的 REPARSE_POINT 条目
+                // 注意：不能依赖 entry.metadata().is_symlink()，某些重解析点该值不可靠
+                if win_util::is_reparse_point(&s_path) {
+                    eprintln!("[copy] 跳过非 Junction 重解析点: {}", s_path.display());
+                    continue;
+                }
+
                 if metadata.file_type().is_symlink() {
                     // 文件级符号链接：跳过（罕见，一般只出现在开发者环境）
                     continue;
                 }
 
                 if metadata.is_dir() {
-                    copy_dir_recursive_with_hash(&s_path, &d_path, base_src, copied_bytes, copied_files, total_bytes, total_files, tx, file_entries, junction_entries, empty_dir_entries)?;
+                    copy_dir_recursive_with_hash(&s_path, &d_path, base_src, copied_bytes, copied_files, total_bytes, total_files, tx, file_entries, junction_entries, empty_dir_entries, depth + 1)?;
                 } else {
-                    // 计算相对于源根目录的相对路径，日志中显示完整层级
-                    let file_name = s_path.strip_prefix(base_src)
-                        .unwrap_or(&s_path)
-                        .to_string_lossy()
-                        .to_string();
-                    // Manifest 用的相对路径（正斜杠分隔）
-                    let rel_path = file_name.replace('\\', "/");
-
-                    let mut src_file = File::open(&s_path)
-                        .map_err(|e| format!("无法打开源文件 {:?}: {}", s_path, e))?;
-                    let mut dst_file = File::create(&d_path)
-                        .map_err(|e| format!("无法创建目标文件 {:?}: {}", d_path, e))?;
-
-                    // 流式 SHA256：边读边算，避免事后二次读盘
-                    let mut hasher = Sha256::new();
-                    let mut buffer = [0u8; 256 * 1024]; // 256KB 拷贝块缓冲（提升吞吐）
-                    let mut actual_size: u64 = 0;
-                    loop {
-                        let bytes_read = src_file.read(&mut buffer)
-                            .map_err(|e| format!("读取源文件失败: {}", e))?;
-                        if bytes_read == 0 {
-                            break;
-                        }
-                        // 流式喂入哈希（仅对源数据，目标写入不影响哈希）
-                        hasher.update(&buffer[..bytes_read]);
-                        dst_file.write_all(&buffer[..bytes_read])
-                            .map_err(|e| format!("写入目标文件失败: {}", e))?;
-
-                        *copied_bytes += bytes_read as u64;
-                        actual_size += bytes_read as u64;
-
-                        // 节流：至少 100ms 发一次，或文件读完时发一次
-                        let should_send = last_send.elapsed().as_millis() >= 100;
-                        if should_send {
-                            let progress = if total_bytes > 0 {
-                                (*copied_bytes as f32 / total_bytes as f32) * 80.0 + 10.0
-                            } else {
-                                90.0
-                            };
-
-                            let _ = tx.send(MigrationProgress {
-                                stage: "Copying".to_string(),
-                                progress,
-                                total_files,
-                                copied_files: *copied_files,
-                                total_size: total_bytes,
-                                copied_size: *copied_bytes,
-                                current_file: file_name.clone(),
-                                detail: format!("复制中: {} ({}/{})", file_name, *copied_files + 1, total_files),
-                                source_path: None,
-                                renamed_source_path: None,
-                                final_target_path: None,
-                            });
-                            last_send = Instant::now();
-                        }
-                    }
-                    dst_file.flush().map_err(|e| format!("数据落盘同步失败: {}", e))?;
-                    *copied_files += 1;
-
-                    // 收集 Manifest 文件条目（流式哈希结果 + 实际读取字节数）
-                    let sha256 = format!("{:x}", hasher.finalize());
-                    file_entries.push(ManifestFileEntry {
-                        relative_path: rel_path,
-                        size: actual_size,
-                        sha256,
-                    });
-
-                    // 每个文件复制完成后也发一次（确保小文件有日志）
-                    let progress = if total_bytes > 0 {
-                        (*copied_bytes as f32 / total_bytes as f32) * 80.0 + 10.0
-                    } else {
-                        90.0
-                    };
-                    let _ = tx.send(MigrationProgress {
-                        stage: "Copying".to_string(),
-                        progress,
-                        total_files,
-                        copied_files: *copied_files,
-                        total_size: total_bytes,
-                        copied_size: *copied_bytes,
-                        current_file: file_name.clone(),
-                        detail: format!("已复制: {} ({}/{})", file_name, *copied_files, total_files),
-                        source_path: None,
-                        renamed_source_path: None,
-                        final_target_path: None,
-                    });
-                    last_send = Instant::now();
+                    // 文件拷贝提取到独立函数，避免 256KB buffer 参与递归栈帧
+                    // 根因：每次递归分配 256KB 栈 buffer → depth 5 即 1.5MB → 栈溢出
+                    copy_single_file_with_hash(
+                        &s_path, &d_path, base_src, copied_bytes, copied_files,
+                        total_bytes, total_files, tx, file_entries, depth, &mut last_send,
+                    )?;
                 }
             }
         }
@@ -976,8 +1123,9 @@ pub fn execute_migration(
         if existing_job.source_path == *source_dir {
             match existing_job.stage {
                 MigrationStage::Copied | MigrationStage::Finalized => {
-                    let _ = tx.send(MigrationProgress::new("Resuming", 90.0,
-                        "检测到上次拷贝已完成，正在恢复迁移（跳过拷贝，从重命名步骤继续）..."));
+                    let _ = tx.send(MigrationProgress::new_keyed("Resuming", 90.0,
+                        "检测到上次拷贝已完成，正在恢复迁移（跳过拷贝，从重命名步骤继续）...",
+                        "log.resumeFromCopied", serde_json::json!({})));
                     return resume_migration_from_copied(existing_job, &tx);
                 }
                 _ => {}
@@ -1046,7 +1194,8 @@ pub fn execute_migration(
         .map_err(|e| format!("无法获取目标盘空间信息（盘符可能无效）: {}", e))?;
 
     // 3. 【预统计】递归统计源目录文件数量和总大小
-    let _ = tx.send(MigrationProgress::new("PreScanning", 1.0, "正在预统计源目录文件..."));
+    let _ = tx.send(MigrationProgress::new_keyed("PreScanning", 1.0, "正在预统计源目录文件...",
+        "log.preScanning", serde_json::json!({})));
     let (total_files, total_size) = pre_scan_migration(source_dir)?;
 
     if total_files == 0 {
@@ -1062,6 +1211,10 @@ pub fn execute_migration(
         copied_size: 0,
         current_file: String::new(),
         detail: format!("预统计完成: {} 个文件, 总计 {}", total_files, crate::scanner::format_size(total_size)),
+        detail_key: Some("log.preScanDone".into()),
+        detail_params: Some(serde_json::json!({
+            "count": total_files, "size": crate::scanner::format_size(total_size)
+        })),
         source_path: None,
         renamed_source_path: None,
         final_target_path: None,
@@ -1120,6 +1273,8 @@ pub fn execute_migration(
         copied_size: 0,
         current_file: String::new(),
         detail: "开始物理复制文件流...".to_string(),
+        detail_key: Some("log.copyStart".into()),
+        detail_params: None,
         source_path: None,
         renamed_source_path: None,
         final_target_path: None,
@@ -1145,6 +1300,7 @@ pub fn execute_migration(
         &mut file_entries,
         &mut junction_entries,
         &mut empty_dir_entries,
+        0, // 初始递归深度
     );
 
     if let Err(e) = copy_result {
@@ -1191,6 +1347,10 @@ pub fn execute_migration(
         } else {
             "正在校验物理数据完整性与哈希值...".to_string()
         },
+        detail_key: Some(
+            if fast_mode { "log.verifyingFast" } else { "log.verifyingHash" }.into()
+        ),
+        detail_params: None,
         source_path: None,
         renamed_source_path: None,
         final_target_path: None,
@@ -1208,8 +1368,9 @@ pub fn execute_migration(
         // 校验不一致：可能是源在复制期间被活跃进程修改（竞态条件）
         // 解决方案：用源当前最新内容重新覆盖差异文件，然后重新校验
         // 最多重试 2 次，防止源持续被修改导致无限循环
-        let _ = tx.send(MigrationProgress::new("Verifying", 91.0,
-            &format!("检测到源目录在复制期间被修改（{}），正在同步差异文件...", e)));
+        let _ = tx.send(MigrationProgress::new_keyed("Verifying", 91.0,
+            &format!("检测到源目录在复制期间被修改（{}），正在同步差异文件...", e),
+            "log.sourceModifiedSync", serde_json::json!({ "error": e })));
 
         let mut retry_count = 0;
         let max_retries = 2;
@@ -1228,8 +1389,11 @@ pub fn execute_migration(
                 break;
             }
 
-            let _ = tx.send(MigrationProgress::new("Verifying", 92.0,
-                &format!("正在重新复制 {} 个差异文件（第 {} 次重试）...", diff_files.len(), retry_count + 1)));
+            let _ = tx.send(MigrationProgress::new_keyed("Verifying", 92.0,
+                &format!("正在重新复制 {} 个差异文件（第 {} 次重试）...", diff_files.len(), retry_count + 1),
+                "log.recopyDiff", serde_json::json!({
+                    "count": diff_files.len(), "retry": retry_count + 1
+                })));
 
             // 重新复制差异文件
             for rel_path in &diff_files {
@@ -1254,8 +1418,9 @@ pub fn execute_migration(
                 Ok(()) => {
                     // 一致了，更新持久化 Manifest
                     fresh_source_manifest.save_to_file(&manifest_path)?;
-                    let _ = tx.send(MigrationProgress::new("Verifying", 93.0,
-                        "差异文件已同步，校验通过"));
+                    let _ = tx.send(MigrationProgress::new_keyed("Verifying", 93.0,
+                        "差异文件已同步，校验通过",
+                        "log.diffSynced", serde_json::json!({})));
                     break;
                 }
                 Err(e2) => {
@@ -1285,6 +1450,8 @@ pub fn execute_migration(
         copied_size: total_size,
         current_file: String::new(),
         detail: "Manifest 校验通过，准备激活目标目录...".to_string(),
+        detail_key: Some("log.verifyPassed".into()),
+        detail_params: None,
         source_path: None,
         renamed_source_path: None,
         final_target_path: None,
@@ -1305,6 +1472,8 @@ pub fn execute_migration(
         copied_size: total_size,
         current_file: String::new(),
         detail: "激活重命名目标文件夹目录结构...".to_string(),
+        detail_key: Some("log.renamingTarget".into()),
+        detail_params: None,
         source_path: None,
         renamed_source_path: None,
         final_target_path: None,
@@ -1332,6 +1501,8 @@ pub fn execute_migration(
         copied_size: total_size,
         current_file: String::new(),
         detail: "正在重命名源目录以腾出原路径...".to_string(),
+        detail_key: Some("log.renamingSource".into()),
+        detail_params: None,
         source_path: None,
         renamed_source_path: None,
         final_target_path: None,
@@ -1366,6 +1537,8 @@ pub fn execute_migration(
         copied_size: total_size,
         current_file: String::new(),
         detail: "正在原位置建立重解析点 (NTFS Junction) 重定向...".to_string(),
+        detail_key: Some("log.creatingJunction".into()),
+        detail_params: None,
         source_path: None,
         renamed_source_path: None,
         final_target_path: None,
@@ -1401,6 +1574,8 @@ pub fn execute_migration(
         copied_size: total_size,
         current_file: String::new(),
         detail: "迁移已完成！请测试软件是否正常使用".to_string(),
+        detail_key: Some("log.migrationDoneTip".into()),
+        detail_params: None,
         source_path: Some(source_dir.to_string_lossy().to_string()),
         renamed_source_path: old_source_path.to_str().map(|s| s.to_string()),
         final_target_path: Some(final_target_path.to_string_lossy().to_string()),
@@ -1439,7 +1614,9 @@ fn resume_migration_from_copied(
         }
 
         // 用持久化的源端 Manifest 校验目标 tmp 完整性
-        let _ = tx.send(MigrationProgress::new("Verifying", 92.0, "恢复迁移：正在用 Manifest 校验已拷贝数据完整性..."));
+        let _ = tx.send(MigrationProgress::new_keyed("Verifying", 92.0,
+            "恢复迁移：正在用 Manifest 校验已拷贝数据完整性...",
+            "log.resumeVerifying", serde_json::json!({})));
 
         let source_manifest = match &job.manifest_path {
             Some(mp) if mp.exists() => {
@@ -1462,7 +1639,9 @@ fn resume_migration_from_copied(
             return Err(format!("恢复失败：临时目录数据不完整（{}），已清理，请重新迁移", e));
         }
 
-        let _ = tx.send(MigrationProgress::new("Renaming", 96.0, "恢复迁移：正在重命名临时目录为正式目录..."));
+        let _ = tx.send(MigrationProgress::new_keyed("Renaming", 96.0,
+            "恢复迁移：正在重命名临时目录为正式目录...",
+            "log.resumeRenamingTmp", serde_json::json!({})));
 
         // 步骤10: rename tmp → final
         if let Err(e) = fs::rename(target_tmp_path, final_target_path) {
@@ -1506,7 +1685,9 @@ fn resume_migration_from_copied(
         let total_size = 0u64;
 
         // 步骤11: rename 源 → _old
-        let _ = tx.send(MigrationProgress::new("Renaming", 97.0, "恢复迁移：正在重命名源目录以腾出原路径..."));
+        let _ = tx.send(MigrationProgress::new_keyed("Renaming", 97.0,
+            "恢复迁移：正在重命名源目录以腾出原路径...",
+            "log.resumeRenamingSource", serde_json::json!({})));
 
         if let Err(e) = fs::rename(source_dir, &old_source_path) {
             let lock_info = detect_locks_with_fallback(source_dir);
@@ -1522,7 +1703,9 @@ fn resume_migration_from_copied(
         journal::write_job(&job)?;
 
         // 步骤12: 建 Junction
-        let _ = tx.send(MigrationProgress::new("Linking", 98.0, "恢复迁移：正在建立 NTFS Junction..."));
+        let _ = tx.send(MigrationProgress::new_keyed("Linking", 98.0,
+            "恢复迁移：正在建立 NTFS Junction...",
+            "log.resumeLinking", serde_json::json!({})));
 
         if let Err(e) = win_util::create_junction(source_dir, final_target_path) {
             // Junction 失败，尝试回滚 rename
@@ -1550,6 +1733,8 @@ fn resume_migration_from_copied(
             copied_size: total_size,
             current_file: String::new(),
             detail: "迁移已完成！请测试软件是否正常使用".to_string(),
+            detail_key: Some("log.migrationDoneTip".into()),
+            detail_params: None,
             source_path: Some(job.source_path.to_string_lossy().to_string()),
             renamed_source_path: job.renamed_source_path.as_ref().and_then(|p| p.to_str().map(|s| s.to_string())),
             final_target_path: Some(job.final_target_path.to_string_lossy().to_string()),
@@ -1934,12 +2119,16 @@ pub fn rollback_completed_migration(
         return Err("迁移目标地物理路径不存在，无法回滚".to_string());
     }
 
-    let _ = tx.send(MigrationProgress::new("RollingBack", 10.0, "开始清除 C 盘的 Junction 重解析点链接..."));
+    let _ = tx.send(MigrationProgress::new_keyed("RollingBack", 10.0,
+        "开始清除 C 盘的 Junction 重解析点链接...",
+        "log.rbClearJunction", serde_json::json!({})));
 
     // 1. 删除 C 盘的 Junction 占位符
     win_util::delete_junction(source_junction)?;
 
-    let _ = tx.send(MigrationProgress::new("RollingBack", 20.0, "正在计算 D 盘实际占用大小..."));
+    let _ = tx.send(MigrationProgress::new_keyed("RollingBack", 20.0,
+        "正在计算 D 盘实际占用大小...",
+        "log.rbCalcSize", serde_json::json!({})));
     let total_bytes = crate::scanner::calculate_dir_size(real_target, 1);
     let (total_files, _) = pre_scan_migration(real_target).unwrap_or((0, total_bytes));
 
@@ -1949,12 +2138,16 @@ pub fn rollback_completed_migration(
         return Err("C 盘剩余可用容量不足以塞回已迁移的文件数据！".to_string());
     }
 
-    let _ = tx.send(MigrationProgress::new("RollingBack", 25.0, "正在生成 D 盘文件清单(SHA256)..."));
+    let _ = tx.send(MigrationProgress::new_keyed("RollingBack", 25.0,
+        "正在生成 D 盘文件清单(SHA256)...",
+        "log.rbGenManifest", serde_json::json!({})));
 
     // 拷贝前生成 D 盘 Manifest（作为回滚的源端清单）
     let source_manifest = Manifest::generate(real_target)?;
 
-    let _ = tx.send(MigrationProgress::new("RollingBack", 30.0, "正在将文件搬运回 C 盘原位置..."));
+    let _ = tx.send(MigrationProgress::new_keyed("RollingBack", 30.0,
+        "正在将文件搬运回 C 盘原位置...",
+        "log.rbCopyBack", serde_json::json!({})));
 
     // 2. 拷贝数据回原位置
     //    回滚是反向拷贝，不需要流式哈希（回滚校验仍用 verify_against 严格校验）
@@ -1977,6 +2170,7 @@ pub fn rollback_completed_migration(
         &mut file_entries,
         &mut junction_entries,
         &mut empty_dir_entries,
+        0, // 初始递归深度
     );
 
     if let Err(e) = copy_result {
@@ -1985,7 +2179,9 @@ pub fn rollback_completed_migration(
         return Err(format!("将文件拷贝回 C 盘时发生故障: {}", e));
     }
 
-    let _ = tx.send(MigrationProgress::new("RollingBack", 90.0, "正在用 Manifest 校验回滚数据完整性..."));
+    let _ = tx.send(MigrationProgress::new_keyed("RollingBack", 90.0,
+        "正在用 Manifest 校验回滚数据完整性...",
+        "log.rbVerify", serde_json::json!({})));
 
     // 用 Manifest 逐项校验：D 盘清单 vs C 盘回滚后清单
     let target_manifest = Manifest::generate(source_junction)?;
@@ -1996,13 +2192,17 @@ pub fn rollback_completed_migration(
         return Err(format!("数据回滚完整性校验失败: {}。已恢复 Junction 指向 D 盘原始数据", e));
     }
 
-    let _ = tx.send(MigrationProgress::new("RollingBack", 95.0, "校验通过，安全删除目标盘残留副本文件..."));
+    let _ = tx.send(MigrationProgress::new_keyed("RollingBack", 95.0,
+        "校验通过，安全删除目标盘残留副本文件...",
+        "log.rbDeleteResidual", serde_json::json!({})));
 
     if let Err((e, _)) = remove_dir_all_with_detail(real_target) {
         return Err(format!("清理 D 盘残留大文件时失败: {}", e));
     }
 
-    let _ = tx.send(MigrationProgress::new("Done", 100.0, "撤销回滚已成功完成！文件数据已完全还原至 C 盘原位置。"));
+    let _ = tx.send(MigrationProgress::new_keyed("Done", 100.0,
+        "撤销回滚已成功完成！文件数据已完全还原至 C 盘原位置。",
+        "log.rbDone", serde_json::json!({})));
     Ok(())
 }
 
@@ -2281,6 +2481,7 @@ mod tests {
             &mut file_entries,
             &mut junction_entries,
             &mut empty_dir_entries,
+            0, // 初始递归深度
         );
 
         assert!(result.is_ok(), "拷贝应成功: {:?}", result.err());
@@ -2353,6 +2554,7 @@ mod tests {
             &mut file_entries,
             &mut junction_entries,
             &mut empty_dir_entries,
+            0, // 初始递归深度
         );
 
         assert!(result.is_ok(), "拷贝应成功: {:?}", result.err());

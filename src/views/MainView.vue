@@ -1,15 +1,27 @@
 <template>
   <div class="app-root">
-    <!-- 语言切换按钮 -->
-    <n-button
-      class="lang-toggle"
-      size="small"
-      secondary
-      @click="toggleLocale"
-      :title="locale === 'zh-CN' ? t('lang.en') : t('lang.zh')"
-    >
-      {{ t('lang.switch') }}
-    </n-button>
+    <!-- 右上角操作区：帮助按钮 + 语言切换 -->
+    <div class="top-actions">
+      <n-button
+        class="help-toggle"
+        size="small"
+        secondary
+        circle
+        :title="t('help.buttonTitle')"
+        @click="store.helpVisible = true"
+      >
+        ?
+      </n-button>
+      <n-button
+        class="lang-toggle"
+        size="small"
+        secondary
+        @click="toggleLocale"
+        :title="locale === 'zh-CN' ? t('lang.en') : t('lang.zh')"
+      >
+        {{ t('lang.switch') }}
+      </n-button>
+    </div>
 
     <!-- 左侧：目录树 -->
     <aside class="left-panel">
@@ -118,6 +130,42 @@
 
     <!-- 警告弹窗 -->
     <WarningDialog />
+
+    <!-- 迁移确认对话框：PendingConfirmation 状态下提示用户测试软件 -->
+    <n-modal
+      :show="store.showConfirmDialog"
+      preset="card"
+      :title="t('migration.confirmTitle')"
+      style="width: 520px; max-width: 90vw;"
+      :mask-closable="false"
+      :close-on-esc="false"
+    >
+      <div class="confirm-dialog-body">
+        <div class="confirm-icon">&#10003;</div>
+        <p class="confirm-tip">{{ t('migration.confirmTip') }}</p>
+        <div class="confirm-info">
+          <div class="confirm-info-row">
+            <span class="confirm-info-label">{{ t('migration.confirmSource') }}</span>
+            <span class="confirm-info-value">{{ store.confirmSourcePath }}</span>
+          </div>
+          <div class="confirm-info-row">
+            <span class="confirm-info-label">{{ t('migration.confirmTarget') }}</span>
+            <span class="confirm-info-value">{{ store.confirmTargetPath }}</span>
+          </div>
+        </div>
+        <p class="confirm-warning">{{ t('migration.confirmWarning') }}</p>
+      </div>
+      <template #footer>
+        <div class="confirm-dialog-footer">
+          <n-button type="warning" :loading="store.migrationStatus === 'RollingBack'" @click="store.instantRollback()">
+            {{ t('migration.confirmRollback') }}
+          </n-button>
+          <n-button type="primary" :loading="store.migrationStatus === 'Copying'" @click="store.confirmAndDeleteSource()">
+            {{ t('migration.confirmDelete') }}
+          </n-button>
+        </div>
+      </template>
+    </n-modal>
   </div>
 </template>
 
@@ -197,18 +245,33 @@ onMounted(async () => {
   position: relative;
 }
 
-.lang-toggle {
+.top-actions {
   position: fixed;
   top: 12px;
   right: 16px;
   z-index: 100;
+  display: flex;
+  gap: 6px;
+}
+
+.help-toggle {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 0;
+  width: 28px;
+  min-width: 28px;
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.15));
+}
+.help-toggle:hover {
+  border-color: var(--accent, #4dabf7);
+}
+
+.lang-toggle {
   font-size: 13px;
   padding: 0 14px;
-  opacity: 1;
   border: 1px solid var(--border-color, rgba(255, 255, 255, 0.15));
 }
 .lang-toggle:hover {
-  opacity: 1;
   border-color: var(--accent, #4dabf7);
 }
 
@@ -358,5 +421,68 @@ onMounted(async () => {
   opacity: 0.6;
   text-align: center;
   margin-top: 6px;
+}
+
+/* ===== 迁移确认对话框 ===== */
+.confirm-dialog-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.confirm-icon {
+  font-size: 40px;
+  color: var(--success, #51cf66);
+  line-height: 1;
+}
+
+.confirm-tip {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.confirm-info {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  background: var(--bg-tertiary, #243447);
+  border-radius: 6px;
+}
+
+.confirm-info-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  gap: 8px;
+}
+
+.confirm-info-label {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.confirm-info-value {
+  color: var(--text-primary);
+  font-weight: 600;
+  word-break: break-all;
+  text-align: right;
+}
+
+.confirm-warning {
+  margin: 0;
+  font-size: 12px;
+  color: var(--warning, #ffd43b);
+}
+
+.confirm-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 </style>

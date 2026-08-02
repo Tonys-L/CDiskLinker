@@ -2,6 +2,32 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { check, type Update } from '@tauri-apps/plugin-updater'
+import { relaunch } from '@tauri-apps/plugin-process'
+import i18n from '../i18n'
+
+// 帮助弹窗的 localStorage 持久化 key：标记用户是否已看过首次帮助
+const HELP_DISMISSED_KEY = 'help-dismissed'
+// 更新检查最小间隔（毫秒）：避免频繁手动触发请求 GitHub
+const UPDATE_CHECK_MIN_INTERVAL = 60 * 1000
+
+// 后端返回的字符串可能是 i18n key（如 "err.xxx" / "log.xxx"），命中则按当前语言翻译，否则原样返回。
+// 兼容底层 OS 错误等不可枚举的动态文本。
+function translateError(e: unknown): string {
+  const msg = String(e)
+  if (/^(err|log)\./.test(msg)) {
+    return i18n.global.t(msg)
+  }
+  return msg
+}
+
+// 后端 invoke 返回的 Ok(String) 可能是 i18n key，命中则翻译；否则视为动态文本原样返回。
+function translateResult(msg: string): string {
+  if (/^(err|log)\./.test(msg)) {
+    return i18n.global.t(msg)
+  }
+  return msg
+}
 
 // === 类型定义 ===
 export interface TreeNode {
@@ -86,12 +112,25 @@ export const useAppStore = defineStore('app', () => {
   const showWarningDialog = ref(false)
   const warningPaths = ref<string[]>([])
   const crashRecoveryMsg = ref('')
+  const crashRecoveryStage = ref('')  // journal stage: "Linked" / "Copied" / "Finalized" 等
   const scanDetail = ref('')
   // 迁移确认对话框：Linked 状态下提示用户测试软件
   const showConfirmDialog = ref(false)
   const confirmSourcePath = ref('')
   const confirmOldPath = ref('')
   const confirmTargetPath = ref('')
+  // 帮助对话框：首次启动自动弹出，或用户点击右上角 "?" 按钮触发
+  const helpVisible = ref(false)
+  // 更新对话框：发现新版本时弹出，包含版本号、更新日志、下载安装进度
+  const updateVisible = ref(false)
+  const updateInfo = ref<Update | null>(null)
+  const updateChecking = ref(false)
+  const updateDownloading = ref(false)
+  const updateProgress = ref(0)
+  const updateProgressText = ref('')
+  const updateErrorMsg = ref('')
+  // 上次更新检查时间戳，用于节流（避免用户狂点导致频繁请求 GitHub）
+  let lastUpdateCheckAt = 0
   // 内部暂存：占用检测通过后需要继续迁移的路径，以及被占用的路径列表
   let pendingMigrationPaths: string[] = []
   let lockedPaths: string[] = []
@@ -125,7 +164,7 @@ export const useAppStore = defineStore('app', () => {
     try {
       await invoke('elevate_self')
     } catch (e) {
-      addLog('error', `提权失败: ${e}`, 'log.elevateFailed', { error: String(e) })
+      addLog('error', `提权失败: ${e}`, 'log.elevateFailed', { error: translateError(e) })
     }
   }
 
@@ -133,7 +172,7 @@ export const useAppStore = defineStore('app', () => {
     try {
       diskInfo.value = await invoke<DiskInfo>('get_disk_info', { drive: 'C' })
     } catch (e) {
-      addLog('error', `获取磁盘信息失败: ${e}`, 'log.diskInfoFailed', { error: String(e) })
+      addLog('error', `获取磁盘信息失败: ${e}`, 'log.diskInfoFailed', { error: translateError(e) })
     }
   }
 
@@ -147,7 +186,7 @@ export const useAppStore = defineStore('app', () => {
       await invoke('scan_disk')
     } catch (e) {
       migrationStatus.value = 'Idle'
-      addLog('error', `扫描失败: ${e}`, 'log.scanFailed', { error: String(e) })
+      addLog('error', `扫描失败: ${e}`, 'log.scanFailed', { error: translateError(e) })
     }
   }
 
@@ -173,7 +212,7 @@ export const useAppStore = defineStore('app', () => {
         level: node.level + 1,
         parentId: node.id,
       }).catch((e) => {
-        addLog('error', `展开目录失败: ${e}`, 'log.expandFailed', { error: String(e) })
+        addLog('error', `展开目录失败: ${e}`, 'log.expandFailed', { error: translateError(e) })
         node.is_expanded = false
       })
     }
@@ -262,7 +301,7 @@ export const useAppStore = defineStore('app', () => {
       })
     } catch (e) {
       migrationStatus.value = 'Idle'
-      addLog('error', `迁移失败: ${e}`, 'log.migrateFailed', { error: String(e) })
+      addLog('error', `迁移失败: ${e}`, 'log.migrateFailed', { error: translateError(e) })
     }
   }
 
@@ -274,7 +313,7 @@ export const useAppStore = defineStore('app', () => {
       try {
         await invoke('kill_locking_processes', { path: p })
       } catch (e) {
-        addLog('error', `关闭占用进程失败 [${p}]: ${e}`, 'log.killLockFailed', { path: p, error: String(e) })
+        addLog('error', `关闭占用进程失败 [${p}]: ${e}`, 'log.killLockFailed', { path: p, error: translateError(e) })
       }
     }
     addLog('info', '已尝试关闭所有占用进程，继续迁移', 'log.lockKilled')
@@ -301,14 +340,15 @@ export const useAppStore = defineStore('app', () => {
 
   async function checkCrashRecovery() {
     try {
-      const result = await invoke<{ found: boolean; message: string }>('check_crash_recovery')
+      const result = await invoke<{ found: boolean; message: string; stage: string }>('check_crash_recovery')
       if (result.found) {
         crashRecoveryMsg.value = result.message
+        crashRecoveryStage.value = result.stage || ''
         // 后端返回的 message 为动态内容，直接透传
         addLog('warn', result.message)
       }
     } catch (e) {
-      addLog('error', `崩溃恢复检查失败: ${e}`, 'log.crashCheckFailed', { error: String(e) })
+      addLog('error', `崩溃恢复检查失败: ${e}`, 'log.crashCheckFailed', { error: translateError(e) })
     }
   }
 
@@ -317,11 +357,31 @@ export const useAppStore = defineStore('app', () => {
       migrationStatus.value = 'RollingBack'
       const msg = await invoke<string>('rollback_journal')
       migrationStatus.value = 'Idle'
-      // 后端返回的回滚结果消息，直接透传
-      addLog('success', msg)
+      crashRecoveryMsg.value = ''
+      crashRecoveryStage.value = ''
+      // 后端返回可能是 i18n key（如 log.noPendingJournal）或崩溃恢复动态消息，统一翻译
+      addLog('success', translateResult(msg), /^(err|log)\./.test(msg) ? msg : undefined)
+      refreshDiskInfo()
     } catch (e) {
       migrationStatus.value = 'Idle'
-      addLog('error', `回滚失败: ${e}`, 'log.rollbackFailed', { error: String(e) })
+      addLog('error', `回滚失败: ${e}`, 'log.rollbackFailed', { error: translateError(e) })
+    }
+  }
+
+  // 从 journal 恢复的 Linked 状态下，确认删除旧源（无参数版本）
+  // 适用于应用重启后 JournalBar 显示的 Linked 状态恢复场景
+  async function confirmJournalComplete() {
+    try {
+      migrationStatus.value = 'Copying'
+      const msg = await invoke<string>('confirm_journal_complete')
+      migrationStatus.value = 'Idle'
+      crashRecoveryMsg.value = ''
+      crashRecoveryStage.value = ''
+      addLog('success', translateResult(msg), /^(err|log)\./.test(msg) ? msg : undefined)
+      refreshDiskInfo()
+    } catch (e) {
+      migrationStatus.value = 'Idle'
+      addLog('error', `删除旧源失败: ${e}`, 'log.confirmDeleteFailed', { error: translateError(e) })
     }
   }
 
@@ -332,11 +392,11 @@ export const useAppStore = defineStore('app', () => {
       await invoke('confirm_delete_source', { path: confirmSourcePath.value })
       showConfirmDialog.value = false
       migrationStatus.value = 'Idle'
-      addLog('success', '旧源目录已删除，迁移完全完成！')
+      addLog('success', '旧源目录已删除，迁移完全完成！', 'log.oldSourceFullyDone')
       refreshDiskInfo()
     } catch (e) {
       migrationStatus.value = 'PendingConfirmation'
-      addLog('error', `删除旧源失败: ${e}`, 'log.confirmDeleteFailed', { error: String(e) })
+      addLog('error', `删除旧源失败: ${e}`, 'log.confirmDeleteFailed', { error: translateError(e) })
     }
   }
 
@@ -347,11 +407,11 @@ export const useAppStore = defineStore('app', () => {
       await invoke('rollback_migration_instant', { path: confirmSourcePath.value })
       showConfirmDialog.value = false
       migrationStatus.value = 'Idle'
-      addLog('success', '迁移已回滚，目录已恢复原状')
+      addLog('success', '迁移已回滚，目录已恢复原状', 'log.instantRollbackDone')
       refreshDiskInfo()
     } catch (e) {
       migrationStatus.value = 'PendingConfirmation'
-      addLog('error', `回滚失败: ${e}`, 'log.instantRollbackFailed', { error: String(e) })
+      addLog('error', `回滚失败: ${e}`, 'log.instantRollbackFailed', { error: translateError(e) })
     }
   }
 
@@ -369,12 +429,114 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  // === 帮助与更新 ===
+
+  // 首次启动检测：若用户未看过帮助，则自动弹出。
+  // 由 App.vue 在 onMounted 中调用，遵循"软件首次打开要弹出帮助框"约束。
+  function initHelpOnFirstLaunch() {
+    try {
+      const dismissed = localStorage.getItem(HELP_DISMISSED_KEY)
+      if (dismissed !== '1') {
+        helpVisible.value = true
+      }
+    } catch {
+      // localStorage 不可用时（如 Tauri 沙箱），保守弹出帮助
+      helpVisible.value = true
+    }
+  }
+
+  // 关闭帮助并标记已看过，后续启动不再自动弹出
+  function dismissHelp() {
+    helpVisible.value = false
+    try {
+      localStorage.setItem(HELP_DISMISSED_KEY, '1')
+    } catch {
+      // 忽略存储失败
+    }
+  }
+
+  // 触发更新检查：打开更新对话框并立即检查
+  // 节流：距上次检查不足 UPDATE_CHECK_MIN_INTERVAL 时仅打开对话框，不重复请求
+  function triggerUpdateCheck() {
+    updateVisible.value = true
+    const now = Date.now()
+    if (now - lastUpdateCheckAt < UPDATE_CHECK_MIN_INTERVAL && updateInfo.value === null && !updateChecking.value) {
+      // 节流期内且无新版本信息：直接展示上次结果（无更新则提示最新）
+      return
+    }
+    void checkForUpdate()
+  }
+
+  // 实际调用 updater 插件检查更新
+  async function checkForUpdate() {
+    updateChecking.value = true
+    updateErrorMsg.value = ''
+    try {
+      const update = await check()
+      updateInfo.value = update
+      if (!update) {
+        addLog('info', i18n.global.t('update.noUpdate'), 'update.noUpdate')
+      }
+    } catch (e) {
+      updateErrorMsg.value = translateError(e)
+      addLog('error', i18n.global.t('update.fail') + ': ' + translateError(e), 'update.fail', { error: translateError(e) })
+    } finally {
+      updateChecking.value = false
+      lastUpdateCheckAt = Date.now()
+    }
+  }
+
+  // 下载并安装更新，显示进度条
+  async function downloadAndInstallUpdate() {
+    if (!updateInfo.value) return
+    updateDownloading.value = true
+    updateProgress.value = 0
+    updateProgressText.value = ''
+    try {
+      let total = 0
+      let downloaded = 0
+      await updateInfo.value.downloadAndInstall((event: { event: string; data?: { chunkLength?: number; contentLength?: number } }) => {
+        switch (event.event) {
+          case 'Started':
+            total = event.data?.contentLength || 0
+            break
+          case 'Progress':
+            downloaded += event.data?.chunkLength || 0
+            if (total > 0) {
+              const pct = Math.round((downloaded / total) * 100)
+              updateProgress.value = pct
+              updateProgressText.value = `${pct}% (${(downloaded / 1024 / 1024).toFixed(1)}MB / ${(total / 1024 / 1024).toFixed(1)}MB)`
+            }
+            break
+          case 'Finished':
+            updateProgress.value = 100
+            updateProgressText.value = i18n.global.t('update.installing')
+            break
+        }
+      })
+      // 安装完成，重启应用
+      await relaunch()
+    } catch (e) {
+      updateErrorMsg.value = translateError(e)
+      addLog('error', i18n.global.t('update.installFail') + ': ' + translateError(e), 'update.installFail', { error: translateError(e) })
+      updateDownloading.value = false
+    }
+  }
+
+  // 关闭更新对话框（仅在未下载时允许，避免中断安装）
+  function closeUpdateDialog() {
+    if (updateDownloading.value) return
+    updateVisible.value = false
+  }
+
   // === 事件监听 ===
   async function setupListeners() {
     // 扫描进度
     await listen('scan-progress', (event: any) => {
       const data = event.payload as any
-      scanDetail.value = data.detail || ''
+      scanDetail.value = data.detail_key
+        ? i18n.global.t(data.detail_key)
+        : (data.detail || '')
     })
 
     // 扫描结果（C盘根目录）
@@ -442,7 +604,10 @@ export const useAppStore = defineStore('app', () => {
         migrationCurrentFile.value = data.current_file
       }
       if (typeof data.detail === 'string') {
-        migrationDetail.value = data.detail
+        // 优先用 i18n key 翻译（进度条标签），无 key 时回退到后端原文
+        migrationDetail.value = data.detail_key
+          ? i18n.global.t(data.detail_key, data.detail_params || {})
+          : data.detail
       }
       // 兼容字段：后端在 Starting 阶段会额外附带 current_item/total_items/folder
       if (typeof data.current_item === 'number') {
@@ -462,7 +627,7 @@ export const useAppStore = defineStore('app', () => {
       const stage = data.stage || ''
       const detail = data.detail || ''
       if (detail && (detail !== lastLogDetail || stage !== lastLogStage)) {
-        addLog('info', detail)
+        addLog('info', detail, data.detail_key, data.detail_params)
         lastLogDetail = detail
         lastLogStage = stage
       }
@@ -491,7 +656,7 @@ export const useAppStore = defineStore('app', () => {
         migrationPercent.value = 0
         // 后端 detail 为动态内容，优先透传；无 detail 时用 i18n
         if (data.detail) {
-          addLog('error', data.detail)
+          addLog('error', data.detail, data.detail_key, data.detail_params)
         } else {
           addLog('error', '迁移失败', 'log.migrateFailedShort')
         }
@@ -506,7 +671,7 @@ export const useAppStore = defineStore('app', () => {
     // 迁移单项错误
     await listen('migration-error', (event: any) => {
       const data = event.payload as any
-      addLog('error', `迁移失败 [${data.path}]: ${data.error}`, 'log.migrateItemFailed', { path: data.path, error: String(data.error) })
+      addLog('error', `迁移失败 [${data.path}]: ${data.error}`, 'log.migrateItemFailed', { path: data.path, error: translateError(data.error) })
     })
   }
 
@@ -517,17 +682,21 @@ export const useAppStore = defineStore('app', () => {
     migrationStage, migrationTotalFiles, migrationCopiedFiles,
     migrationTotalSize, migrationCopiedSize, migrationCurrentFile,
     lockingProcesses, showLockDialog,
-    logs, showWarningDialog, warningPaths, crashRecoveryMsg,
+    logs, showWarningDialog, warningPaths, crashRecoveryMsg, crashRecoveryStage,
     scanDetail,
     showConfirmDialog, confirmSourcePath, confirmOldPath, confirmTargetPath,
+    helpVisible, updateVisible, updateInfo, updateChecking,
+    updateDownloading, updateProgress, updateProgressText, updateErrorMsg,
     selectedNodes, selectedSafeNodes, selectedWarningNodes,
     totalSelectedSize, canMigrate,
     formatSize,
     checkAdmin, elevateSelf, refreshDiskInfo, scanDisk,
     toggleNodeExpand, toggleNodeSelect,
-    startMigration, doMigration, checkCrashRecovery, rollbackJournal,
+    startMigration, doMigration, checkCrashRecovery, rollbackJournal, confirmJournalComplete,
     killLockingProcessesAndContinue, cancelMigrationDueToLocks,
     confirmAndDeleteSource, instantRollback,
+    initHelpOnFirstLaunch, dismissHelp,
+    triggerUpdateCheck, checkForUpdate, downloadAndInstallUpdate, closeUpdateDialog,
     addLog, setupListeners,
   }
 })

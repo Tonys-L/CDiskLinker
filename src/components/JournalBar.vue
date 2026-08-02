@@ -5,7 +5,22 @@
       <span class="journal-title">{{ t('journal.title') }}</span>
       <span class="journal-detail">{{ store.crashRecoveryMsg }}</span>
     </div>
-    <n-button size="small" type="warning" @click="store.rollbackJournal()">
+    <!-- 仅 Linked 状态（Junction 已建，软件可工作）才显示"确认删除旧源"按钮 -->
+    <n-button
+      v-if="store.crashRecoveryStage === 'Linked'"
+      size="small"
+      type="primary"
+      :loading="store.migrationStatus === 'Copying'"
+      @click="store.confirmJournalComplete()"
+    >
+      {{ t('journal.confirmDelete') }}
+    </n-button>
+    <n-button
+      size="small"
+      type="warning"
+      :loading="store.migrationStatus === 'RollingBack'"
+      @click="store.rollbackJournal()"
+    >
       {{ t('journal.rollback') }}
     </n-button>
     <n-button size="small" quaternary @click="store.crashRecoveryMsg = ''">

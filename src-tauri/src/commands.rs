@@ -38,6 +38,10 @@ pub struct DiskInfo {
 pub struct CrashRecoveryResult {
     pub found: bool,
     pub message: String,
+    /// 当前 journal 的迁移阶段（前端据此决定显示哪些恢复按钮）
+    /// 值为 "Initiated" / "Copied" / "Finalized" / "SourceRenamed" / "Linked" / "Completed"
+    /// 仅当 found=true 时有意义
+    pub stage: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -113,6 +117,7 @@ pub async fn scan_disk(app: AppHandle) -> Result<(), String> {
         let _ = app_handle.emit("scan-progress", serde_json::json!({
             "status": "Scanning",
             "detail": "正在扫描C盘根目录...",
+            "detail_key": "log.scanRootDetail",
         }));
 
         let results = scanner::scan_subdirectories(&scan_path, 0);
@@ -213,12 +218,16 @@ pub fn migrate_selected(
     fast_mode: bool,
 ) -> Result<(), String> {
     if paths.is_empty() {
-        return Err("没有选定任何可安全移链的文件包目录".to_string());
+        return Err("err.noSourceSelected".to_string());
     }
 
     let app_handle = app.clone();
     std::thread::spawn(move || {
         let total = paths.len();
+        // 跟踪是否有任何路径到达了 PendingConfirmation 状态
+        // 如果有，不应发出 migration-done（前端由 PendingConfirmation 事件接管状态）
+        let mut any_pending_confirmation = false;
+
         for (idx, src_path_str) in paths.iter().enumerate() {
             let src_path = PathBuf::from(src_path_str);
             let folder_name = src_path.file_name()
@@ -236,6 +245,12 @@ pub fn migrate_selected(
                 "copied_size": 0,
                 "current_file": "",
                 "detail": format!("({}/{}) 正在移出 {}...", idx + 1, total, folder_name),
+                "detail_key": "log.migratingItem",
+                "detail_params": {
+                    "current": idx + 1,
+                    "total": total,
+                    "folder": folder_name,
+                },
                 "current_item": idx + 1,
                 "total_items": total,
                 "folder": folder_name,
@@ -264,17 +279,39 @@ pub fn migrate_selected(
             let (result_tx, result_rx) = std::sync::mpsc::channel();
             let target_dir_clone = target_dir.clone();
 
-            std::thread::spawn(move || {
-                let res = engine::execute_migration(&entry, &target_dir_clone, tx, fast_mode);
-                let _ = result_tx.send(res);
-            });
+            // 使用 8MB 栈空间（默认 2MB 不足以应对深层目录递归拷贝）
+            // 0xC00000FD (STATUS_STACK_OVERFLOW) 会在深层目录树递归时触发
+            let migration_thread = std::thread::Builder::new()
+                .stack_size(8 * 1024 * 1024)
+                .spawn(move || {
+                    let res = engine::execute_migration(&entry, &target_dir_clone, tx, fast_mode);
+                    let _ = result_tx.send(res);
+                });
 
-            // 转发结构化进度事件到前端
+            if let Err(e) = migration_thread {
+                let _ = app_handle.emit("migration-error", serde_json::json!({
+                    "path": src_path_str,
+                    "error": format!("无法启动迁移线程: {}", e),
+                }));
+                let _ = app_handle.emit("migration-done", serde_json::json!({
+                    "status": "Failed",
+                    "detail": format!("迁移失败: 无法启动迁移线程: {}", e),
+                    "detail_key": "log.migrateFailedThreadStart",
+                    "detail_params": { "error": format!("{}", e) },
+                }));
+                return;
+            }
+
+            // 转发结构化进度事件到前端，同时跟踪是否到达 PendingConfirmation
             while let Ok(prog) = rx.recv() {
+                // 检测 PendingConfirmation 阶段：迁移完成，等待用户确认
+                if prog.stage == "PendingConfirmation" {
+                    any_pending_confirmation = true;
+                }
                 let _ = app_handle.emit("migration-progress", serde_json::to_value(&prog).unwrap_or(serde_json::json!({})));
             }
 
-            let item_result = result_rx.recv().unwrap_or(Err("无法获取迁移结果".to_string()));
+            let item_result = result_rx.recv().unwrap_or(Err("err.noMigrationResult".to_string()));
             if let Err(e) = item_result {
                 let _ = app_handle.emit("migration-error", serde_json::json!({
                     "path": src_path_str,
@@ -283,6 +320,8 @@ pub fn migrate_selected(
                 let _ = app_handle.emit("migration-done", serde_json::json!({
                     "status": "Failed",
                     "detail": format!("迁移失败: {}", e),
+                    "detail_key": "log.migrateFailed",
+                    "detail_params": { "error": e },
                 }));
                 return;
             }
@@ -293,10 +332,18 @@ pub fn migrate_selected(
             }));
         }
 
-        let _ = app_handle.emit("migration-done", serde_json::json!({
-            "status": "Completed",
-            "detail": "全部迁移完成。",
-        }));
+        // 仅当没有任何路径到达 PendingConfirmation 时才发出 migration-done
+        // PendingConfirmation 状态下，前端已由该事件接管（显示确认对话框），
+        // 此时发出 migration-done 会将 migrationStatus 重置为 Idle，导致：
+        // 1. 确认对话框显示的同时按钮可再次点击
+        // 2. 用户可能误启第二次迁移，造成 journal 覆盖和状态混乱
+        if !any_pending_confirmation {
+            let _ = app_handle.emit("migration-done", serde_json::json!({
+                "status": "Completed",
+                "detail": "全部迁移完成。",
+                "detail_key": "log.allDone",
+            }));
+        }
     });
 
     Ok(())
@@ -309,6 +356,7 @@ pub fn rollback_journal(app: AppHandle) -> Result<String, String> {
         "stage": "RollingBack",
         "progress": 0.0,
         "detail": "正在执行回滚...",
+        "detail_key": "log.rollingBack",
     }));
 
     match engine::handle_crash_recovery() {
@@ -321,7 +369,7 @@ pub fn rollback_journal(app: AppHandle) -> Result<String, String> {
             Ok(msg)
         }
         Ok(None) => {
-            Ok("未检索到残存日志或待回滚的挂起项".to_string())
+            Ok("log.noPendingJournal".to_string())
         }
         Err(e) => Err(e),
     }
@@ -334,6 +382,38 @@ pub fn confirm_delete_source(path: String) -> Result<(), String> {
     engine::confirm_delete_source(&source_path)
 }
 
+/// 从 journal 恢复的 Linked 状态下，确认删除旧源（无参数版本）
+///
+/// 与 confirm_delete_source 的区别：从 journal 读取 source_path，无需前端传参。
+/// 适用于应用重启后 JournalBar 显示的 Linked 状态恢复场景。
+#[tauri::command]
+pub fn confirm_journal_complete(app: AppHandle) -> Result<String, String> {
+    let app_handle = app.clone();
+    let _ = app_handle.emit("migration-progress", serde_json::json!({
+        "stage": "Copying",
+        "progress": 95.0,
+        "detail": "正在删除旧源目录...",
+        "detail_key": "log.deletingOldSource",
+    }));
+
+    // 从 journal 读取 source_path
+    let job = crate::journal::read_job()
+        .map_err(|e| format!("读取迁移日志失败: {}", e))?
+        .ok_or_else(|| "err.noJournalFound".to_string())?;
+
+    let source_path = PathBuf::from(&job.source_path);
+    engine::confirm_delete_source(&source_path)?;
+
+    let _ = app_handle.emit("migration-progress", serde_json::json!({
+        "stage": "Idle",
+        "progress": 100.0,
+        "detail": "旧源已删除，迁移完成！",
+        "detail_key": "log.oldSourceDeleted",
+    }));
+
+    Ok("log.oldSourceFullyDone".to_string())
+}
+
 /// 即时回滚迁移（秒级，无需数据拷贝）
 /// 适用于 Linked / SourceRenamed / Finalized 状态
 #[tauri::command]
@@ -344,9 +424,24 @@ pub fn rollback_migration_instant(path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn check_crash_recovery() -> Result<CrashRecoveryResult, String> {
+    // 单独读取 journal 的 stage（handle_crash_recovery 可能修改 stage，这里读取的是最终状态）
+    let stage = crate::journal::read_job()
+        .ok()
+        .flatten()
+        .map(|job| format!("{:?}", job.stage))
+        .unwrap_or_default();
+
     match engine::handle_crash_recovery() {
-        Ok(Some(msg)) => Ok(CrashRecoveryResult { found: true, message: msg }),
-        Ok(None) => Ok(CrashRecoveryResult { found: false, message: String::new() }),
-        Err(e) => Ok(CrashRecoveryResult { found: true, message: format!("自检异常: {}", e) }),
+        Ok(Some(msg)) => {
+            // handle_crash_recovery 可能修改了 stage（如 Finalized→Linked 自动恢复），重新读取
+            let final_stage = crate::journal::read_job()
+                .ok()
+                .flatten()
+                .map(|job| format!("{:?}", job.stage))
+                .unwrap_or(stage);
+            Ok(CrashRecoveryResult { found: true, message: msg, stage: final_stage })
+        }
+        Ok(None) => Ok(CrashRecoveryResult { found: false, message: String::new(), stage: String::new() }),
+        Err(e) => Ok(CrashRecoveryResult { found: true, message: format!("自检异常: {}", e), stage }),
     }
 }
