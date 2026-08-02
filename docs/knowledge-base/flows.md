@@ -32,8 +32,8 @@ flowchart TD
     CloseProcess --> WriteLog
 
     WriteLog --> StageInitiated([状态: Initiated])
-    StageInitiated --> PhysicalCopy[物理拷贝数据至目标盘 .tmp_ 临时目录]
-    PhysicalCopy --> ValidationCheck{数量、大小及哈希校验通过?}
+    StageInitiated --> PhysicalCopy[物理拷贝数据至目标盘 .tmp_ 临时目录\n流式计算源端 SHA256]
+    PhysicalCopy --> ValidationCheck{完整性校验通过?\n默认: 数量+大小+SHA256\n快速模式: 数量+大小}
 
     ValidationCheck -->|否| RollbackTmp[删除目标临时目录]
     ValidationCheck -->|是| StageCopied([状态: Copied])
@@ -66,7 +66,8 @@ flowchart TD
 | 目标检查 | 目标同名正式目录已存在 | 未开始 | 返回错误 | 源不变 |
 | 写日志 | 写 Initiated 失败 | 未开始 | 返回错误 | 源不变 |
 | 物理拷贝 | IO错误/空间满/权限不足 | Initiated | 删 tmp + 清日志 + 报错 | 源完整 |
-| 完整性校验 | 数量/大小/哈希不一致 | Initiated | 删 tmp + 清日志 + 报错 | 源完整 |
+| 完整性校验 | 默认模式：数量/大小/SHA256 不一致 | Initiated | 删 tmp + 清日志 + 报错 | 源完整 |
+| 完整性校验 | 快速模式：数量/大小不一致 | Initiated | 删 tmp + 清日志 + 报错 | 源完整（无法检测磁盘静默位翻转） |
 | 二次校验 | 文件数/大小不匹配 | Initiated | 删 tmp + 清日志 + 报错 | 源完整 |
 | 写日志 | 写 Copied 失败 | Initiated | 删 tmp + 清日志 + 报错 | 源完整，可重试 |
 | rename(tmp→final) | rename 失败 | Copied | **保留 tmp + 保留日志 + 报错** | 源完整，tmp完整，可重试 |
@@ -165,7 +166,7 @@ stateDiagram-v2
 | 从 | 到 | 触发条件 | 副作用 |
 |----|-----|----------|--------|
 | `[*]` | `Initiated` | 用户点击迁移，通过输入校验 | 在目标盘建立 `.tmp_` 文件夹 |
-| `Initiated` | `Copied` | 拷贝完毕 + 哈希/数量/大小校验通过 + 二次校验通过 | 日志更新 `Stage = Copied` |
+| `Initiated` | `Copied` | 拷贝完毕（流式生成源端 Manifest）+ 完整性校验通过 + 二次校验通过。默认模式校验 SHA256+数量+大小；快速模式仅校验数量+大小 | 日志更新 `Stage = Copied` |
 | `Copied` | `Finalized` | tmp 重命名为 final 成功 | 日志更新 `Stage = Finalized` |
 | `Finalized` | `SourceRenamed` | 源目录重命名为 _cdisklinker_old 成功 | 日志更新 `Stage = SourceRenamed` |
 | `SourceRenamed` | `Linked` | Junction 创建成功 | 日志更新 `Stage = Linked` |
@@ -203,6 +204,33 @@ stateDiagram-v2
 
 ---
 
+## 校验方式
+
+迁移流程在 `Initiated → Copied` 转换时执行完整性校验，支持两种模式：
+
+### 默认模式（完整校验）
+
+- **校验项**：文件数量 + 逐项大小 + SHA256 哈希
+- **实现**：拷贝时流式计算源端 SHA256（`copy_dir_recursive_with_hash`），拷贝完成后对目标端调用 `Manifest::generate` 重新计算哈希，再 `verify_against` 逐项比对
+- **磁盘读取次数**：2 次（拷贝时算源端 + 目标端 generate）
+- **能检测**：拷贝过程中的数据损坏、磁盘静默写入错误（位翻转）、文件截断
+- **适用场景**：默认场景，对数据完整性要求高
+
+### 快速模式（仅校验大小）
+
+- **校验项**：文件数量 + 逐项大小
+- **实现**：`Manifest::generate_size_only` 只收集元数据不算哈希，`verify_size_only` 仅比对数量与大小
+- **磁盘读取次数**：1 次（仅拷贝本身）
+- **能检测**：拷贝失败、文件截断、数量不一致
+- **不能检测**：磁盘静默写入错误（位翻转）
+- **适用场景**：用户信任磁盘完整性（新盘、已备份），追求迁移速度
+- **切换约束**：仅在 `Idle` 状态可切换，迁移进行中禁用开关
+- **回滚约束**：`rollback_completed_migration`（从 `Completed` 回滚）不支持快速模式，始终使用完整 SHA256 校验，确保回滚数据绝对正确
+
+详见 `lessons/migration.md` 第 1.2 条。
+
+---
+
 ## 变更记录
 
 | 日期 | 变更内容 | 变更人 | 关联变更 |
@@ -211,3 +239,4 @@ stateDiagram-v2
 | 2026-07-23 | 状态机细化：3 阶段→5 阶段（新增 SourceDeleted/Renamed）；新增崩溃恢复策略表；扩充异常处理表覆盖每步骤 | Antigravity | #TASK-crash-recovery 同步更新 constraints.md |
 | 2026-07-23 | 删除源失败改为保留 Copied 状态（不再删 tmp），支持重试恢复；扫描大小改为异步计算 | Antigravity | #TASK-resume-and-async-scan |
 | 2026-07-25 | V2 迁移流程：5 阶段→6 阶段（SourceDeleted/Renamed → Finalized/SourceRenamed，新增 Completed）；源目录改为重命名而非删除，支持即时回滚；新增即时回滚流程 | Antigravity | #TASK-v2-migration-flow 同步更新 constraints.md |
+| 2026-07-26 | 新增"校验方式"章节，记录流式哈希优化与快速模式；更新流程图与异常处理表区分两种模式 | Antigravity | #TASK-sha256-opt 同步更新 boundaries.md、lessons/migration.md |
