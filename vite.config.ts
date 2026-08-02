@@ -15,6 +15,10 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
+    // Windows 上 localhost 默认解析为 IPv4 (127.0.0.1)，
+    // 而 Vite 默认监听 IPv6 ([::1])，导致 Tauri webview 连接失败（"无法打开 localhost"）。
+    // 显式绑定 127.0.0.1 确保 Tauri webview 可访问。
+    host: '127.0.0.1',
   },
   envPrefix: ['VITE_', 'TAURI_'],
   build: {
