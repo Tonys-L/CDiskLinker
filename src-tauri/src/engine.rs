@@ -800,8 +800,11 @@ fn copy_dir_recursive_with_hash(
                 has_entries = true;
 
                 // 检测子目录是否为 Junction（重解析点）
-                // 关键：必须先检测再判断 is_dir，否则 Junction 会被当作普通目录递归进入
-                if metadata.is_dir() && win_util::is_junction(&s_path) {
+                // 关键：必须用 is_junction 判断，不能用 metadata.is_dir()。
+                // 原因：Rust 标准库 DirEntry::metadata().is_dir() 对 Junction 返回 false，
+                // 因为 Junction 带 FILE_ATTRIBUTE_REPARSE_POINT 属性，is_dir() 会排除此类条目。
+                // 若加上 is_dir() 条件，Junction 分支永远不执行，会走到文件分支破坏数据。
+                if win_util::is_junction(&s_path) {
                     // 子目录是 Junction：读取其目标路径，在目标位置重建同指向的 Junction
                     let rel = s_path.strip_prefix(base_src)
                         .unwrap_or(&s_path)
@@ -2025,4 +2028,544 @@ fn rand_simple() -> u32 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let start = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     (start & 0xFFFFFFFF) as u32
+}
+
+// ============================================================================
+// 单元测试 / 集成测试
+// ----------------------------------------------------------------------------
+// 覆盖目标：
+//   - Manifest 生成与校验（generate / generate_size_only / verify_against / verify_size_only）
+//   - 流式哈希拷贝（copy_dir_recursive_with_hash）
+//   - Manifest 持久化与自哈希（save_to_file / load_from_file）
+//   - 差异文件定位（find_manifest_diff_files）
+//   - execute_migration 完整 e2e（需非 C 盘，标 #[ignore]）
+//
+// 测试隔离：
+//   - 所有文件操作在 std::env::temp_dir() 下唯一子目录中进行，测试结束清理
+//   - 不依赖 journal 目录（避免污染 current_exe 父目录）
+// ============================================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::mpsc;
+
+    /// 构造唯一测试根目录，避免并发测试互相干扰
+    fn make_test_root(test_name: &str) -> PathBuf {
+        let root = std::env::temp_dir()
+            .join("cdisklinker_engine_tests")
+            .join(format!("{}_{}", test_name, rand_simple()));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// 在指定根目录下构造测试源目录树
+    /// 结构：
+    ///   root/src/
+    ///     file1.txt        ("hello")
+    ///     subdir/
+    ///       file2.txt      ("world!")
+    ///     empty_dir/       (空)
+    fn build_source_tree(root: &Path) -> PathBuf {
+        let src = root.join("src");
+        fs::create_dir_all(src.join("subdir")).unwrap();
+        fs::create_dir_all(src.join("empty_dir")).unwrap();
+        fs::write(src.join("file1.txt"), "hello").unwrap();
+        fs::write(src.join("subdir/file2.txt"), "world!").unwrap();
+        src
+    }
+
+    /// 简单递归拷贝（测试辅助，与 engine 内部实现无关）
+    fn copy_tree(src: &Path, dst: &Path) {
+        fs::create_dir_all(dst).unwrap();
+        for entry in fs::read_dir(src).unwrap() {
+            let entry = entry.unwrap();
+            let s = entry.path();
+            let d = dst.join(entry.file_name());
+            if s.is_dir() {
+                copy_tree(&s, &d);
+            } else {
+                fs::copy(&s, &d).unwrap();
+            }
+        }
+    }
+
+    // ===== T1: Manifest::generate + verify_against（通过场景）=====
+    #[test]
+    fn test_manifest_generate_and_verify_ok() {
+        let root = make_test_root("manifest_generate_verify_ok");
+        let src = build_source_tree(&root);
+        let dst = root.join("dst");
+        copy_tree(&src, &dst);
+
+        let src_manifest = Manifest::generate(&src).unwrap();
+        let dst_manifest = Manifest::generate(&dst).unwrap();
+
+        // 源和目标内容一致，校验应通过
+        let result = src_manifest.verify_against(&dst_manifest);
+        assert!(result.is_ok(), "校验应通过: {:?}", result.err());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ===== T2: Manifest::verify_against（不匹配场景）=====
+    #[test]
+    fn test_manifest_verify_against_size_mismatch() {
+        let root = make_test_root("manifest_verify_size_mismatch");
+        let src = build_source_tree(&root);
+        let dst = root.join("dst");
+        copy_tree(&src, &dst);
+
+        // 修改目标文件内容，使大小不一致
+        fs::write(dst.join("file1.txt"), "hello world").unwrap();
+
+        let src_manifest = Manifest::generate(&src).unwrap();
+        let dst_manifest = Manifest::generate(&dst).unwrap();
+
+        let result = src_manifest.verify_against(&dst_manifest);
+        assert!(result.is_err(), "大小不一致应校验失败");
+        let err = result.unwrap_err();
+        assert!(err.contains("大小不一致"), "错误信息应包含大小不一致: {}", err);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_manifest_verify_against_sha256_mismatch() {
+        let root = make_test_root("manifest_verify_sha256_mismatch");
+        let src = build_source_tree(&root);
+        let dst = root.join("dst");
+        copy_tree(&src, &dst);
+
+        // 修改目标文件内容，保持大小一致但内容不同（SHA256 不同）
+        fs::write(dst.join("file1.txt"), "helol").unwrap(); // 同长度不同内容
+
+        let src_manifest = Manifest::generate(&src).unwrap();
+        let dst_manifest = Manifest::generate(&dst).unwrap();
+
+        let result = src_manifest.verify_against(&dst_manifest);
+        assert!(result.is_err(), "SHA256 不一致应校验失败");
+        let err = result.unwrap_err();
+        assert!(err.contains("SHA256"), "错误信息应包含 SHA256: {}", err);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_manifest_verify_against_missing_file() {
+        let root = make_test_root("manifest_verify_missing_file");
+        let src = build_source_tree(&root);
+        let dst = root.join("dst");
+        copy_tree(&src, &dst);
+
+        // 删除目标中的一个文件
+        fs::remove_file(dst.join("subdir/file2.txt")).unwrap();
+
+        let src_manifest = Manifest::generate(&src).unwrap();
+        let dst_manifest = Manifest::generate(&dst).unwrap();
+
+        let result = src_manifest.verify_against(&dst_manifest);
+        assert!(result.is_err(), "文件数量不一致应校验失败");
+        let err = result.unwrap_err();
+        assert!(err.contains("数量不一致"), "错误信息应包含数量不一致: {}", err);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ===== T3: Manifest::generate_size_only（不算 SHA256）=====
+    #[test]
+    fn test_manifest_generate_size_only() {
+        let root = make_test_root("manifest_generate_size_only");
+        let src = build_source_tree(&root);
+
+        let manifest = Manifest::generate_size_only(&src).unwrap();
+
+        // 应收集到 2 个文件（file1.txt + subdir/file2.txt）
+        assert_eq!(manifest.files.len(), 2, "应收集到 2 个文件");
+        // SHA256 字段应为空（快速模式不算哈希）
+        for f in &manifest.files {
+            assert!(f.sha256.is_empty(), "快速模式 sha256 应为空: {:?}", f.relative_path);
+        }
+        // 应收集到 1 个空目录（empty_dir）
+        assert_eq!(manifest.empty_dirs.len(), 1, "应收集到 1 个空目录");
+        assert_eq!(manifest.empty_dirs[0].relative_path, "empty_dir");
+        // 文件大小应正确
+        let total: u64 = manifest.files.iter().map(|f| f.size).sum();
+        assert_eq!(total, 5 + 6, "总大小应为 11 字节 (hello + world!)");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ===== T4: Manifest::verify_size_only（通过 + 不匹配）=====
+    #[test]
+    fn test_manifest_verify_size_only_ok() {
+        let root = make_test_root("manifest_verify_size_only_ok");
+        let src = build_source_tree(&root);
+        let dst = root.join("dst");
+        copy_tree(&src, &dst);
+
+        // 源端用完整 generate（含 SHA256），目标端用 size_only
+        // 这是 fast_mode 的实际用法
+        let src_manifest = Manifest::generate(&src).unwrap();
+        let dst_manifest = Manifest::generate_size_only(&dst).unwrap();
+
+        let result = src_manifest.verify_size_only(&dst_manifest);
+        assert!(result.is_ok(), "大小一致应校验通过: {:?}", result.err());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_manifest_verify_size_only_mismatch() {
+        let root = make_test_root("manifest_verify_size_only_mismatch");
+        let src = build_source_tree(&root);
+        let dst = root.join("dst");
+        copy_tree(&src, &dst);
+
+        // 修改目标文件大小
+        fs::write(dst.join("file1.txt"), "hello world").unwrap();
+
+        let src_manifest = Manifest::generate(&src).unwrap();
+        let dst_manifest = Manifest::generate_size_only(&dst).unwrap();
+
+        let result = src_manifest.verify_size_only(&dst_manifest);
+        assert!(result.is_err(), "大小不一致应校验失败");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_manifest_verify_size_only_ignores_sha256() {
+        let root = make_test_root("verify_size_only_ignores_sha256");
+        let src = build_source_tree(&root);
+        let dst = root.join("dst");
+        copy_tree(&src, &dst);
+
+        // 修改目标文件内容，保持大小一致但内容不同
+        fs::write(dst.join("file1.txt"), "helol").unwrap();
+
+        let src_manifest = Manifest::generate(&src).unwrap();
+        let dst_manifest = Manifest::generate_size_only(&dst).unwrap();
+
+        // 快速模式只校验大小，不校验 SHA256，应通过
+        let result = src_manifest.verify_size_only(&dst_manifest);
+        assert!(result.is_ok(), "快速模式应忽略 SHA256 不一致: {:?}", result.err());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ===== T5: copy_dir_recursive_with_hash（基础场景）=====
+    #[test]
+    fn test_copy_dir_recursive_with_hash_basic() {
+        let root = make_test_root("copy_with_hash_basic");
+        let src = build_source_tree(&root);
+        let dst = root.join("dst");
+
+        let (tx, _rx) = mpsc::channel::<MigrationProgress>();
+        let mut copied_bytes = 0u64;
+        let mut copied_files = 0usize;
+        let mut file_entries: Vec<ManifestFileEntry> = Vec::new();
+        let mut junction_entries: Vec<ManifestJunctionEntry> = Vec::new();
+        let mut empty_dir_entries: Vec<ManifestDirEntry> = Vec::new();
+
+        let result = copy_dir_recursive_with_hash(
+            &src,
+            &dst,
+            &src,
+            &mut copied_bytes,
+            &mut copied_files,
+            11, // total_bytes
+            2,  // total_files
+            &tx,
+            &mut file_entries,
+            &mut junction_entries,
+            &mut empty_dir_entries,
+        );
+
+        assert!(result.is_ok(), "拷贝应成功: {:?}", result.err());
+
+        // 验证文件内容正确
+        assert_eq!(fs::read_to_string(dst.join("file1.txt")).unwrap(), "hello");
+        assert_eq!(fs::read_to_string(dst.join("subdir/file2.txt")).unwrap(), "world!");
+
+        // 验证空目录被保留
+        assert!(dst.join("empty_dir").exists(), "空目录应被保留");
+
+        // 验证 Manifest 条目收集正确
+        assert_eq!(file_entries.len(), 2, "应收集到 2 个文件条目");
+        assert_eq!(copied_files, 2, "应拷贝 2 个文件");
+        assert_eq!(copied_bytes, 11, "应拷贝 11 字节");
+        assert_eq!(empty_dir_entries.len(), 1, "应收集到 1 个空目录条目");
+        assert_eq!(junction_entries.len(), 0, "无 Junction");
+
+        // 验证 SHA256 已计算（非空）
+        for f in &file_entries {
+            assert!(!f.sha256.is_empty(), "流式哈希应已计算: {:?}", f.relative_path);
+        }
+
+        // 验证 SHA256 正确性（手算对照）
+        // "hello" 的 SHA256 = 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+        let file1_entry = file_entries.iter().find(|f| f.relative_path == "file1.txt").unwrap();
+        assert_eq!(
+            file1_entry.sha256,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            "file1.txt 的 SHA256 不正确"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ===== T6: copy_dir_recursive_with_hash（Junction 不跟入）=====
+    #[test]
+    fn test_copy_dir_recursive_with_hash_junction_not_followed() {
+        let root = make_test_root("copy_with_hash_junction");
+        let src = root.join("src");
+        let junction_target = root.join("junction_target");
+        let dst = root.join("dst");
+
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&junction_target).unwrap();
+        fs::write(junction_target.join("inside_junction.txt"), "data").unwrap();
+        fs::write(src.join("regular.txt"), "regular").unwrap();
+
+        // 在 src 下创建指向 junction_target 的 Junction
+        let junction_in_src = src.join("link");
+        let create_result = win_util::create_junction(&junction_in_src, &junction_target);
+        assert!(create_result.is_ok(), "创建测试 Junction 失败: {:?}", create_result.err());
+
+        let (tx, _rx) = mpsc::channel::<MigrationProgress>();
+        let mut copied_bytes = 0u64;
+        let mut copied_files = 0usize;
+        let mut file_entries: Vec<ManifestFileEntry> = Vec::new();
+        let mut junction_entries: Vec<ManifestJunctionEntry> = Vec::new();
+        let mut empty_dir_entries: Vec<ManifestDirEntry> = Vec::new();
+
+        let result = copy_dir_recursive_with_hash(
+            &src,
+            &dst,
+            &src,
+            &mut copied_bytes,
+            &mut copied_files,
+            7,  // total_bytes (regular.txt = 7 字节)
+            1,  // total_files
+            &tx,
+            &mut file_entries,
+            &mut junction_entries,
+            &mut empty_dir_entries,
+        );
+
+        assert!(result.is_ok(), "拷贝应成功: {:?}", result.err());
+
+        // 验证：只拷贝了 regular.txt，没跟入 Junction
+        // 注意：file_entries 只收集真实文件，不含 Junction 内部文件
+        assert_eq!(file_entries.len(), 1, "应只收集 1 个文件（不跟入 Junction）");
+        assert_eq!(file_entries[0].relative_path, "regular.txt");
+
+        // 验证：Junction 被记录到 junction_entries（而非当作文件拷贝）
+        assert_eq!(junction_entries.len(), 1, "应收集到 1 个 Junction 条目");
+        assert_eq!(junction_entries[0].relative_path, "link");
+
+        // 验证：目标端重建了 Junction（指向相同目标）
+        assert!(win_util::is_junction(&dst.join("link")), "目标端应重建 Junction");
+
+        // 验证：未跟入 Junction 拷贝其内容
+        // 判定方式：删除目标端 Junction 后，junction_target 中的文件不应出现在 dst 下
+        // 直接通过 Junction 访问 inside_junction.txt 会返回 true（这是 Junction 的正常行为），
+        // 但这并不代表"跟入拷贝"。真正的"跟入拷贝"会把文件复制到 dst/link/ 实体目录下。
+        win_util::delete_junction(&dst.join("link")).unwrap();
+        assert!(!dst.join("link").exists(), "删除 Junction 后 link 路径不应存在（证明未被当作普通目录拷贝内容）");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ===== T7: find_manifest_diff_files（差异定位）=====
+    #[test]
+    fn test_find_manifest_diff_files() {
+        let root = make_test_root("find_diff_files");
+        let src = root.join("src");
+        let dst = root.join("dst");
+
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+
+        // 源：3 个文件
+        fs::write(src.join("same.txt"), "same").unwrap();          // 与目标一致
+        fs::write(src.join("modified.txt"), "original").unwrap();   // 目标内容不同
+        fs::write(src.join("only_in_src.txt"), "src_only").unwrap(); // 目标缺失
+
+        // 目标：3 个文件
+        fs::write(dst.join("same.txt"), "same").unwrap();
+        fs::write(dst.join("modified.txt"), "changed").unwrap();   // 内容不同（同长度）
+        fs::write(dst.join("only_in_dst.txt"), "dst_only").unwrap(); // 源缺失（不在 diff 列表中）
+
+        let src_manifest = Manifest::generate(&src).unwrap();
+        let dst_manifest = Manifest::generate(&dst).unwrap();
+
+        let diff = find_manifest_diff_files(&src_manifest, &dst_manifest);
+
+        // 应包含 modified.txt 和 only_in_src.txt，不包含 same.txt
+        assert_eq!(diff.len(), 2, "应定位到 2 个差异文件");
+        assert!(diff.contains(&"modified.txt".to_string()), "应包含 modified.txt");
+        assert!(diff.contains(&"only_in_src.txt".to_string()), "应包含 only_in_src.txt");
+        assert!(!diff.contains(&"same.txt".to_string()), "不应包含 same.txt");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ===== T8: Manifest 持久化与自哈希 =====
+    #[test]
+    fn test_manifest_save_and_load() {
+        let root = make_test_root("manifest_save_load");
+        let src = build_source_tree(&root);
+        let manifest_path = root.join("manifest.json");
+
+        let original = Manifest::generate(&src).unwrap();
+        original.save_to_file(&manifest_path).unwrap();
+
+        // 文件应存在
+        assert!(manifest_path.exists(), "Manifest 文件应已创建");
+
+        // 加载并校验自哈希
+        let loaded = Manifest::load_from_file(&manifest_path).unwrap();
+
+        // 核心字段应一致
+        assert_eq!(loaded.total_files, original.total_files);
+        assert_eq!(loaded.total_size, original.total_size);
+        assert_eq!(loaded.files.len(), original.files.len());
+        assert_eq!(loaded.empty_dirs.len(), original.empty_dirs.len());
+
+        // 每个文件的相对路径、大小、SHA256 应一致
+        let mut orig_files = original.files.clone();
+        let mut loaded_files = loaded.files.clone();
+        orig_files.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+        loaded_files.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+        for (o, l) in orig_files.iter().zip(loaded_files.iter()) {
+            assert_eq!(o.relative_path, l.relative_path);
+            assert_eq!(o.size, l.size);
+            assert_eq!(o.sha256, l.sha256);
+        }
+
+        // self_hash 应非空且一致
+        assert!(!loaded.self_hash.is_empty(), "self_hash 应非空");
+        assert_eq!(loaded.self_hash, original.self_hash, "self_hash 应一致");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_manifest_load_corrupted_fails() {
+        let root = make_test_root("manifest_load_corrupted");
+        let manifest_path = root.join("corrupted.json");
+
+        // 写入无效 JSON
+        fs::write(&manifest_path, "not a valid json").unwrap();
+
+        let result = Manifest::load_from_file(&manifest_path);
+        assert!(result.is_err(), "损坏的 Manifest 应加载失败");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_manifest_self_hash_tamper_detection() {
+        let root = make_test_root("manifest_tamper");
+        let src = build_source_tree(&root);
+        let manifest_path = root.join("manifest.json");
+
+        let original = Manifest::generate(&src).unwrap();
+        original.save_to_file(&manifest_path).unwrap();
+
+        // 篡改 Manifest 文件内容（修改一个文件大小但保留原 self_hash）
+        let mut content = fs::read_to_string(&manifest_path).unwrap();
+        // 简单篡改：替换一个 size 值
+        content = content.replace("\"size\": 5", "\"size\": 999");
+        fs::write(&manifest_path, content).unwrap();
+
+        let result = Manifest::load_from_file(&manifest_path);
+        assert!(result.is_err(), "self_hash 不匹配应加载失败");
+        let err = result.unwrap_err();
+        assert!(err.contains("self_hash") || err.contains("哈希"), "错误应提示 self_hash 不匹配: {}", err);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ===== T9: execute_migration 完整 e2e（需非 C 盘）=====
+    // 此测试需要非 C 盘的 NTFS 分区（D: 或其他），且会写入 journal 文件到 current_exe 父目录。
+    // 默认忽略，手动运行：cargo test test_execute_migration_e2e -- --ignored --nocapture
+    #[test]
+    #[ignore = "需要非 C 盘 NTFS 分区，且会写入 journal 目录；手动运行：cargo test -- --ignored"]
+    fn test_execute_migration_e2e_default_mode() {
+        let test_root = std::env::temp_dir().join("cdisklinker_e2e_default");
+        let _ = fs::remove_dir_all(&test_root);
+        fs::create_dir_all(&test_root).unwrap();
+
+        // 模拟源目录（必须在 C 盘以触发跨盘逻辑）
+        // 注意：如果 temp_dir 不在 C 盘，此测试会因"同盘"校验失败
+        let source_dir = std::env::temp_dir().join(format!("cdisklinker_e2e_src_{}", rand_simple()));
+        let _ = fs::remove_dir_all(&source_dir);
+        fs::create_dir_all(source_dir.join("subdir")).unwrap();
+        fs::write(source_dir.join("file1.txt"), "content1").unwrap();
+        fs::write(source_dir.join("subdir/file2.txt"), "content2").unwrap();
+
+        // 目标盘：使用 D 盘（如果存在）
+        let target_drive = "D:\\cdisklinker_e2e_target";
+        let _ = fs::remove_dir_all(target_drive);
+        fs::create_dir_all(target_drive).unwrap();
+
+        let entry = ScanEntry {
+            path: source_dir.clone(),
+            name: source_dir.file_name().unwrap().to_string_lossy().to_string(),
+            size_in_bytes: 0,
+            size_on_disk_formatted: String::new(),
+            rating: crate::scanner::DirectoryRating::Safe,
+            depth: 0,
+            expanded: false,
+            has_children: false,
+        };
+
+        let (tx, _rx) = mpsc::channel::<MigrationProgress>();
+
+        // 默认模式（完整 SHA256 校验）
+        let result = execute_migration(&entry, target_drive, tx, false);
+
+        if result.is_err() {
+            // 如果 D 盘不存在或非 NTFS，跳过验证（不视为失败）
+            let err = result.unwrap_err();
+            if err.contains("不是 NTFS") || err.contains("无法获取") || err.contains("空间不足") {
+                eprintln!("跳过：目标盘不可用（{}）", err);
+                let _ = fs::remove_dir_all(&source_dir);
+                let _ = fs::remove_dir_all(target_drive);
+                return;
+            }
+            panic!("execute_migration 失败: {}", err);
+        }
+
+        // 验证：源目录已被重命名为 _cdisklinker_old
+        let old_path = source_dir.with_extension("._cdisklinker_old");
+        assert!(old_path.exists(), "源目录应被重命名为 _cdisklinker_old");
+
+        // 验证：原位置已成为 Junction
+        assert!(win_util::is_junction(&source_dir), "原位置应已创建 Junction");
+
+        // 验证：通过 Junction 可访问文件
+        assert!(source_dir.join("file1.txt").exists(), "通过 Junction 应能访问 file1.txt");
+        assert_eq!(
+            fs::read_to_string(source_dir.join("subdir/file2.txt")).unwrap(),
+            "content2"
+        );
+
+        // 验证：目标盘有正式目录
+        let final_target = std::path::Path::new(target_drive).join(source_dir.file_name().unwrap());
+        assert!(final_target.exists(), "目标盘应有正式目录");
+
+        // 清理：删除 Junction + 删 _old + 删 final + 删 journal
+        let _ = win_util::delete_junction(&source_dir);
+        let _ = fs::remove_dir_all(&old_path);
+        let _ = fs::remove_dir_all(&final_target);
+        let _ = crate::journal::clear_job();
+
+        let _ = fs::remove_dir_all(&source_dir);
+        let _ = fs::remove_dir_all(target_drive);
+    }
 }
