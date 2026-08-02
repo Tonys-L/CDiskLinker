@@ -684,6 +684,81 @@ pub fn is_ntfs(drive_root: &str) -> Result<bool, String> {
     }
 }
 
+/// 读取 Windows 系统代理设置（从注册表 Internet Settings）
+/// 返回格式如 "http://127.0.0.1:7897"，未配置代理时返回 None
+/// 用于让 reqwest（updater 插件）能通过系统代理访问 GitHub Releases
+pub fn get_system_proxy() -> Option<String> {
+    // ProxyEnable 为 0x1（REG_DWORD）表示启用系统代理
+    let proxy_enable = read_registry_value(
+        r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+        "ProxyEnable",
+    )?;
+    if !proxy_enable.contains("0x1") {
+        return None;
+    }
+
+    let proxy_server = read_registry_value(
+        r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+        "ProxyServer",
+    )?;
+    let proxy_server = proxy_server.trim();
+    if proxy_server.is_empty() {
+        return None;
+    }
+
+    // ProxyServer 格式可能是:
+    //   "127.0.0.1:7897"                 (统一代理)
+    //   "http=...;https=..."             (分协议代理)
+    // 优先取 https，其次 http，最后整体
+    let proxy_addr = if proxy_server.contains('=') {
+        proxy_server
+            .split(';')
+            .find_map(|s| {
+                let s = s.trim();
+                s.strip_prefix("https=").or_else(|| s.strip_prefix("http="))
+            })
+            .unwrap_or("")
+    } else {
+        proxy_server
+    };
+
+    if proxy_addr.is_empty() {
+        return None;
+    }
+
+    // reqwest 需要 URL 格式的代理地址
+    let proxy_url = if proxy_addr.starts_with("http://") || proxy_addr.starts_with("https://") {
+        proxy_addr.to_string()
+    } else {
+        format!("http://{}", proxy_addr)
+    };
+    Some(proxy_url)
+}
+
+/// 调用 reg query 读取注册表值（技术层 win_util 允许调用 OS 命令）
+fn read_registry_value(key: &str, value_name: &str) -> Option<String> {
+    let output = std::process::Command::new("reg")
+        .args(["query", key, "/v", value_name])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // reg query 输出格式:
+    //     ProxyEnable    REG_DWORD    0x1
+    // split_whitespace 后取最后一字段
+    stdout
+        .lines()
+        .find(|line| line.contains(value_name))
+        .and_then(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            parts.last().map(|s| s.to_string())
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

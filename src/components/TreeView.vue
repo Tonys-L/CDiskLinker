@@ -51,7 +51,11 @@
         </span>
         <!-- 名称与大小 -->
         <span class="node-name">{{ node.name }}</span>
-        <span class="node-size">{{ node.rating === 'Forbidden' ? '—' : (node.size_text || t('tree.calculating')) }}</span>
+        <span class="node-size">{{
+          node.is_junction ? '—' :
+          (node.rating === 'Forbidden' ? '—' :
+          (node.size_text || t('tree.calculating')))
+        }}</span>
         <!-- 评级标签 -->
         <n-tag
           v-if="node.rating === 'Warning'"
@@ -70,7 +74,7 @@
           size="tiny"
           type="info"
           :bordered="false"
-        >{{ t('tree.migrated') }}</n-tag>
+        >{{ t('tree.junction') }}</n-tag>
       </div>
       <div v-if="store.treeNodes.length === 0" class="tree-empty">
         <template v-if="store.migrationStatus === 'Scanning'">

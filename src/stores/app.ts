@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, shallowRef } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { check, type Update } from '@tauri-apps/plugin-updater'
@@ -123,7 +123,9 @@ export const useAppStore = defineStore('app', () => {
   const helpVisible = ref(false)
   // 更新对话框：发现新版本时弹出，包含版本号、更新日志、下载安装进度
   const updateVisible = ref(false)
-  const updateInfo = ref<Update | null>(null)
+  // Update 对象继承 Tauri Resource（含私有字段），必须用 shallowRef 避免 Vue 深度 Proxy 代理
+// 否则访问私有字段时报 "Cannot read private member from an object whose class did not declare it"
+const updateInfo = shallowRef<Update | null>(null)
   const updateChecking = ref(false)
   const updateDownloading = ref(false)
   const updateProgress = ref(0)

@@ -29,6 +29,7 @@ export default {
     warning: '警告',
     forbidden: '禁用',
     migrated: '已迁移',
+    junction: '链接',
     scanning: '扫描中...',
     empty: '点击"开始扫描"查看C盘目录结构',
   },

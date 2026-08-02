@@ -12,6 +12,12 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            // reqwest 默认不读 Windows 系统代理，只读 HTTPS_PROXY 环境变量
+            // 从注册表读取系统代理并设置环境变量，让 updater 插件能访问 GitHub Releases
+            if let Some(proxy) = win_util::get_system_proxy() {
+                std::env::set_var("HTTPS_PROXY", &proxy);
+                std::env::set_var("HTTP_PROXY", &proxy);
+            }
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()

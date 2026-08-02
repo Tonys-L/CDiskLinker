@@ -95,7 +95,7 @@ watch(() => store.logs.length, async () => {
 
 .log-level {
   flex-shrink: 0;
-  width: 42px;
+  min-width: 75px;
 }
 
 .log-info .log-level { color: var(--accent, #4dabf7); }

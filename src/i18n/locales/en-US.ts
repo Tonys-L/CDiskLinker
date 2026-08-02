@@ -29,6 +29,7 @@ export default {
     warning: 'Warning',
     forbidden: 'Disabled',
     migrated: 'Migrated',
+    junction: 'Link',
     scanning: 'Scanning...',
     empty: 'Click "Start Scan" to view C drive structure',
   },

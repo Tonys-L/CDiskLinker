@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::fs;
+use crate::win_util;
 
 /// 目录的危险评级划分
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -139,12 +140,14 @@ pub fn scan_subdirectories(parent_path: &Path, depth: i32) -> Vec<ScanEntry> {
         for entry in entries.flatten() {
             let path = entry.path();
             if let Ok(metadata) = entry.metadata() {
-                if metadata.is_dir() {
-                    // 跳过重解析点，防止把已经建立 Junction 联接的目录重新扫描计算
-                    if metadata.file_type().is_symlink() {
-                        continue;
-                    }
+                // 检测是否为 Junction/重解析点（已迁移的目录）
+                // 注意：Windows 上 metadata.is_dir() 对 Junction 返回 false
+                // （因为 is_symlink() 为 true 时 is_dir() 返回 false）
+                // 所以需要单独检测 is_junction，与 is_dir 取或集
+                let is_junction = win_util::is_junction(&path);
 
+                // 普通目录 or Junction 都包含在扫描结果中
+                if metadata.is_dir() || is_junction {
                     let name = path.file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
@@ -158,7 +161,8 @@ pub fn scan_subdirectories(parent_path: &Path, depth: i32) -> Vec<ScanEntry> {
                         DirectoryRating::Safe
                     };
 
-                    let has_children = has_subdirectories(&path);
+                    // Junction 不展开；普通目录正常检测子目录
+                    let has_children = if is_junction { false } else { has_subdirectories(&path) };
 
                     results.push(ScanEntry {
                         path,

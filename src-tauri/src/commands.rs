@@ -137,7 +137,8 @@ pub async fn scan_disk(app: AppHandle) -> Result<(), String> {
         let app_handle2 = app_handle.clone();
         std::thread::spawn(move || {
             for entry in &results {
-                if entry.rating != DirectoryRating::Forbidden {
+                // 跳过 Forbidden 和 Junction（Junction 大小不应计算，它指向其他位置）
+                if entry.rating != DirectoryRating::Forbidden && !win_util::is_junction(&entry.path) {
                     let size = scanner::calculate_dir_size(&entry.path, 1);
                     let _ = app_handle2.emit("node-size-update", serde_json::json!({
                         "path": entry.path.to_string_lossy(),
@@ -174,7 +175,8 @@ pub async fn scan_subdirectory(app: AppHandle, path: String, level: i32, parent_
         let app_handle2 = app_handle.clone();
         std::thread::spawn(move || {
             for entry in &results {
-                if entry.rating != DirectoryRating::Forbidden {
+                // 跳过 Forbidden 和 Junction（Junction 大小不应计算，它指向其他位置）
+                if entry.rating != DirectoryRating::Forbidden && !win_util::is_junction(&entry.path) {
                     let size = scanner::calculate_dir_size(&entry.path, 1);
                     let _ = app_handle2.emit("node-size-update", serde_json::json!({
                         "path": entry.path.to_string_lossy(),
