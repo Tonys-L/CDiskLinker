@@ -36,6 +36,10 @@ export default {
     junction: '链接',
     scanning: '扫描中...',
     empty: '点击"开始扫描"查看C盘目录结构',
+    search: '搜索目录',
+    searchPlaceholder: '搜索已展开的目录...',
+    matchCount: '{count} 个匹配',
+    noMatch: '无匹配结果',
   },
   source: {
     title: '源目录',

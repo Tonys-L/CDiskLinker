@@ -36,6 +36,10 @@ export default {
     junction: 'Link',
     scanning: 'Scanning...',
     empty: 'Click "Start Scan" to view C drive structure',
+    search: 'Search',
+    searchPlaceholder: 'Search expanded dirs...',
+    matchCount: '{count} match(es)',
+    noMatch: 'No match found',
   },
   source: {
     title: 'Source',
