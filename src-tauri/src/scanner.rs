@@ -211,12 +211,10 @@ struct DirTreeNode {
 /// 递归扫描目录树，自底向上累加大小
 /// - 跳过 Junction（is_dir 返回 false，不会被误入）
 /// - 跳过 Forbidden 目录
-/// - 限制最大深度，避免过深递归
+/// - depth < max_depth: 递归展开子目录到树中
+/// - depth >= max_depth: 不再展开子目录，但用 calculate_dir_size 完整计算大小
+///   这样大小计算与目录树一致（完整递归），但目录列表不会过深
 fn build_dir_tree(path: &Path, depth: i32, max_depth: i32) -> Option<DirTreeNode> {
-    if depth > max_depth {
-        return None;
-    }
-
     // Forbidden 目录直接跳过
     if is_forbidden_path(path) {
         return None;
@@ -242,6 +240,13 @@ fn build_dir_tree(path: &Path, depth: i32, max_depth: i32) -> Option<DirTreeNode
         depth,
         children: Vec::new(),
     };
+
+    // 达到最大深度：用 calculate_dir_size 完整计算大小，不再递归展开子目录到树中
+    // 关键：大小计算必须完整，否则会出现与目录树大小不一致的问题
+    if depth >= max_depth {
+        node.total_size = calculate_dir_size(path, 1);
+        return Some(node);
+    }
 
     if let Ok(entries) = fs::read_dir(path) {
         for entry in entries.flatten() {
