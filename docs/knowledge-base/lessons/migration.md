@@ -95,9 +95,51 @@ let target_manifest = if fast_mode {
 
 ---
 
+### 1.3 流式哈希拷贝中 Junction 检测失效（Rust DirEntry::metadata().is_dir() 对 Junction 返回 false）
+
+**问题**: 1.2 的流式哈希拷贝 `copy_dir_recursive_with_hash` 实现中，Junction 检测条件写作 `metadata.is_dir() && win_util::is_junction(&s_path)`，导致 **Junction 分支永远不执行**。源目录中包含的 NTFS Junction 会被走到文件分支，对 Junction 路径调用 `File::create(&d_path)` 创建文件，破坏数据完整性，违反 `INV-008`（Junction 不跟入、目标端重建同指向 Junction）。
+
+**原因**: Rust 标准库 `std::fs::DirEntry::metadata()` 返回的 `FileType::is_dir()` 对 Junction 返回 **false**。Windows 文件系统中 Junction 带 `FILE_ATTRIBUTE_REPARSE_POINT` 属性，Rust 标准库的 `is_dir()` 会排除带此属性的条目（即 Junction 既不被识别为目录也不被识别为符号链接，而是"其他"）。
+
+诊断过程：在测试中 `entry.metadata()` 对 Junction 返回 `Ok(FileType { is_dir: false, is_symlink: false })`，但 `win_util::is_junction()`（基于 `GetFileAttributesW` 检查 `FILE_ATTRIBUTE_REPARSE_POINT`）返回 `true`。两者结合导致 `metadata.is_dir() && is_junction` 恒为 false。
+
+**解决方案**: 直接用 `is_junction()` 作为唯一判定条件，去掉 `is_dir()`：
+
+```rust
+// 修改前（有 bug）：
+if metadata.is_dir() && win_util::is_junction(&s_path) {
+    // 永远不执行
+}
+
+// 修改后：
+if win_util::is_junction(&s_path) {
+    // Junction：读取目标，在目标端重建同指向 Junction，不跟入
+}
+```
+
+Junction 本身就是目录型重解析点，`is_junction` 已隐含"是目录"语义，无需额外 `is_dir()` 检查。
+
+**影响文件**:
+- `src-tauri/src/engine.rs` — `copy_dir_recursive_with_hash` 第 804 行 Junction 检测条件
+
+**关联不变量**: `INV-008`（Junction 不跟入、目标端重建同指向）
+
+**测试覆盖**:
+- `test_copy_dir_recursive_with_hash_junction_not_followed`：构造含 Junction 的源目录，验证 Junction 被记录到 `junction_entries`、目标端重建 Junction、删除目标端 Junction 后 `dst/link` 不存在（证明未被当作普通目录拷贝内容）
+
+**踩坑要点**:
+1. **Rust 标准库对 Windows 重解析点的处理**：`is_dir()` / `is_symlink()` 对 Junction 都返回 false，必须用平台 API（`GetFileAttributesW`）检查 `FILE_ATTRIBUTE_REPARSE_POINT`
+2. **测试断言写法**：通过 Junction 访问其目标内文件会返回 true（这是 Junction 正常行为），不能用来判定"是否跟入拷贝"。正确判定：删除目标端 Junction 后路径应不存在（若是跟入拷贝，文件会以实体形式留在 `dst/link/` 下）
+3. **发现方式**：本 bug 由新增的 T6 单元测试暴露，证明测试驱动开发的必要性——1.2 的代码上线时未发现此问题
+
+**日期**: 2026-08-02
+
+---
+
 ## 变更记录
 
 | 日期 | 变更内容 | 变更人 | 关联变更 |
 |------|----------|--------|----------|
 | 2026-07-24 | 初始版本，记录迁移释放空间与统计大小差异的调查结论 | Antigravity | — |
 | 2026-07-26 | 新增 1.2，记录 SHA256 校验性能优化与快速模式设计 | Antigravity | #TASK-sha256-opt 同步更新 flows.md、boundaries.md |
+| 2026-08-02 | 新增 1.3，记录流式哈希拷贝中 Junction 检测失效 bug 与修复 | Antigravity | #TASK-engine-tests |

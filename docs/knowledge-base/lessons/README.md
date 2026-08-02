@@ -24,7 +24,7 @@
 
 | 文件 | 业务分类 | 条目数 | 最近更新 |
 |------|----------|--------|----------|
-| migration.md | 双阶段安全迁移 | 2 | 2026-07-26 |
+| migration.md | 双阶段安全迁移 | 3 | 2026-08-02 |
 | dev-environment.md | 开发环境 | 1 | 2026-08-02 |
 
 ---
@@ -59,3 +59,4 @@
 | 2026-07-24 | 新增 migration.md，记录迁移释放空间与统计大小差异的调查结论 | Antigravity | — |
 | 2026-07-26 | migration.md 新增 1.2，记录 SHA256 校验性能优化与快速模式设计 | Antigravity | #TASK-sha256-opt 同步更新 flows.md、boundaries.md |
 | 2026-08-02 | 新增 dev-environment.md，记录 Tauri dev 模式 IPv6/IPv4 解析不一致问题 | Antigravity | #TASK-fix-localhost |
+| 2026-08-02 | migration.md 新增 1.3，记录流式哈希拷贝中 Junction 检测失效 bug 与修复 | Antigravity | #TASK-engine-tests |

@@ -141,7 +141,7 @@
 
 | 模块类型 | 覆盖率要求 | 重点测试 |
 |----------|-----------|----------|
-| 核心层 (`engine`) | >= 80% | 双阶段拷贝状态机的流转、异常中断后的回滚与恢复机制 |
+| 核心层 (`engine`) | >= 80% | 双阶段拷贝状态机的流转、异常中断后的回滚与恢复机制；流式哈希拷贝（含 Junction 不跟入）；Manifest 生成/校验（默认模式 + 快速模式）；Manifest 持久化与 self_hash 篡改检测 |
 | 技术层 (`win_util`) | >= 70% | 创建 Junction、解除文件占用、提权验证的 API 边界 |
 
 ---
@@ -153,3 +153,4 @@
 | 2026-07-21 | 初始化版本，建立模块定位表与三个核心不变量 | Antigravity | — |
 | 2026-07-23 | 新增 INV-004（唯一副本保护）、INV-005（NTFS 强制）、INV-006（根目录禁止） | Antigravity | #TASK-crash-recovery 同步更新 flows.md |
 | 2026-07-25 | V2 迁移流程：更新 INV-001（Junction 前数据须在 final 位置）、INV-004（源重命名后 final 为唯一权威副本）；新增 INV-007（源须重命名非删除）、INV-008（_old 须用户确认后方可删）；技术栈更新为 Vue 3 + Naive UI + Tauri 2.x | Antigravity | #TASK-v2-migration-flow 同步更新 flows.md |
+| 2026-08-02 | 测试约束补充：核心层重点测试项增加流式哈希拷贝（含 Junction 不跟入）、Manifest 生成/校验、Manifest 持久化与 self_hash 篡改检测 | Antigravity | #TASK-engine-tests |
