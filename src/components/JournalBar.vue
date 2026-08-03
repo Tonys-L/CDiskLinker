@@ -4,6 +4,11 @@
     <div class="journal-content">
       <span class="journal-title">{{ t('journal.title') }}</span>
       <span class="journal-detail">{{ store.crashRecoveryMsg }}</span>
+      <span v-if="store.migrationStatus === 'Copying' || store.migrationStatus === 'RollingBack'"
+            class="journal-progress">
+        <n-spin size="small" />
+        <span class="journal-progress-text">{{ store.migrationDetail || t('log.processing') }}</span>
+      </span>
     </div>
     <!-- 仅 Linked 状态（Junction 已建，软件可工作）才显示"确认删除旧源"按钮 -->
     <n-button
@@ -69,5 +74,18 @@ const store = useAppStore()
 .journal-detail {
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+.journal-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--primary-color, #2080f0);
+}
+
+.journal-progress-text {
+  flex: 1;
 }
 </style>

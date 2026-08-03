@@ -437,7 +437,7 @@ const updateInfo = shallowRef<Update | null>(null)
       // msg 为 log.oldSourceFullyDone 或 log.oldSourceDeletedWithResidue
       const isWarning = msg === 'log.oldSourceDeletedWithResidue'
       addLog(
-        isWarning ? 'warning' : 'success',
+        isWarning ? 'warn' : 'success',
         translateResult(msg),
         /^(err|log)\./.test(msg) ? msg : undefined,
       )
@@ -458,7 +458,7 @@ const updateInfo = shallowRef<Update | null>(null)
       if (result.fully_deleted) {
         addLog('success', '旧源目录已删除，迁移完全完成！', 'log.oldSourceFullyDone')
       } else {
-        addLog('warning', '迁移已完成，但部分旧源文件删除失败，请手动清理残留', 'log.oldSourceDeletedWithResidue', { files: result.failed_files })
+        addLog('warn', '迁移已完成，但部分旧源文件删除失败，请手动清理残留', 'log.oldSourceDeletedWithResidue', { files: result.failed_files })
       }
       refreshDiskInfo()
     } catch (e) {
@@ -477,7 +477,7 @@ const updateInfo = shallowRef<Update | null>(null)
       if (result.fully_deleted) {
         addLog('success', '迁移已回滚，目录已恢复原状', 'log.instantRollbackDone')
       } else {
-        addLog('warning', '迁移已回滚，目录已恢复原状，但部分目标文件删除失败，请手动清理残留', 'log.instantRollbackDoneWithResidue', { files: result.failed_files })
+        addLog('warn', '迁移已回滚，目录已恢复原状，但部分目标文件删除失败，请手动清理残留', 'log.instantRollbackDoneWithResidue', { files: result.failed_files })
       }
       refreshDiskInfo()
     } catch (e) {
