@@ -795,6 +795,50 @@ fn remove_dir_all_with_detail(dir: &Path) -> Result<(), (String, Option<PathBuf>
     remove_recursive(dir)
 }
 
+/// 删除结果（用于 best_effort 删除场景）
+#[derive(serde::Serialize, Debug)]
+pub struct DeleteResult {
+    /// 是否全部删除成功
+    pub fully_deleted: bool,
+    /// 删除失败的文件相对路径与错误信息列表
+    pub failed_files: Vec<String>,
+}
+
+/// 尽力删除目录及其内容，收集失败项但不中止。
+///
+/// 用于删除冗余副本（_old / final）：单个文件删不掉不应阻止流程完成。
+/// 返回删除失败的文件列表（路径 + 错误信息），空 Vec 表示全部成功。
+fn remove_dir_all_best_effort(dir: &Path) -> Vec<(PathBuf, String)> {
+    let mut failures: Vec<(PathBuf, String)> = Vec::new();
+    fn remove_recursive(path: &Path, failures: &mut Vec<(PathBuf, String)>) {
+        // 关键：先检测 Junction（与 remove_dir_all_with_detail 一致的安全要求）
+        if win_util::is_junction(path) {
+            if let Err(e) = fs::remove_dir(path) {
+                failures.push((path.to_path_buf(), format!("{}", e)));
+            }
+        } else if path.is_symlink() {
+            if let Err(e) = fs::remove_file(path) {
+                failures.push((path.to_path_buf(), format!("{}", e)));
+            }
+        } else if path.is_dir() {
+            if let Ok(entries) = fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    remove_recursive(&entry.path(), failures);
+                }
+            }
+            if let Err(e) = fs::remove_dir(path) {
+                failures.push((path.to_path_buf(), format!("{}", e)));
+            }
+        } else {
+            if let Err(e) = fs::remove_file(path) {
+                failures.push((path.to_path_buf(), format!("{}", e)));
+            }
+        }
+    }
+    remove_recursive(dir, &mut failures);
+    failures
+}
+
 /// 格式化占用进程列表为字符串
 fn format_locks(locks: &[(u32, String)]) -> String {
     let names: Vec<String> = locks.iter()
@@ -1938,11 +1982,61 @@ pub fn handle_crash_recovery() -> Result<Option<String>, String> {
     }
 }
 
+/// 删除旧源目录（_old）的核心逻辑，不涉及 journal I/O。
+///
+/// 尽力删除：部分文件删不掉不报错，返回 DeleteResult 含失败列表。
+/// 调用方据此决定是否提示用户手动清理残留。
+fn delete_old_source_best_effort(job: &journal::PendingJob) -> DeleteResult {
+    let old_path = job.renamed_source_path.clone()
+        .unwrap_or_else(|| {
+            eprintln!("警告：Linked 状态缺少 renamed_source_path，尝试推导");
+            make_old_path(&job.source_path)
+        });
+
+    let mut failed_files = Vec::new();
+    if old_path.exists() {
+        let failures = remove_dir_all_best_effort(&old_path);
+        for (path, err) in failures {
+            let rel = path.strip_prefix(&old_path)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            failed_files.push(format!("{} ({})", rel, err));
+        }
+    }
+    DeleteResult {
+        fully_deleted: failed_files.is_empty(),
+        failed_files,
+    }
+}
+
+/// 清理 final 目录（冗余副本）的核心逻辑，不涉及 journal I/O。
+///
+/// 用于回滚场景：源已恢复，final 是冗余副本，尽力删除，部分失败不阻止回滚完成。
+fn cleanup_final_best_effort(final_target_path: &Path) -> DeleteResult {
+    let mut failed_files = Vec::new();
+    if final_target_path.exists() {
+        let failures = remove_dir_all_best_effort(final_target_path);
+        for (path, err) in failures {
+            let rel = path.strip_prefix(final_target_path)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            failed_files.push(format!("{} ({})", rel, err));
+        }
+    }
+    DeleteResult {
+        fully_deleted: failed_files.is_empty(),
+        failed_files,
+    }
+}
+
 /// 用户确认迁移正常，删除旧源目录（_cdisklinker_old）
 ///
 /// 仅在 Linked 状态下可调用。
-/// 删除 _old 目录后，迁移进入 Completed 状态，不可再即时回滚。
-pub fn confirm_delete_source(source_path: &Path) -> Result<(), String> {
+/// 尽力删除 _old 目录：部分文件删不掉不阻止流程完成，返回 DeleteResult 含失败列表。
+/// 删除后迁移进入 Completed 状态，不可再即时回滚。
+pub fn confirm_delete_source(source_path: &Path) -> Result<DeleteResult, String> {
     // 读取当前任务
     let mut job = journal::read_job()?
         .ok_or_else(|| "没有进行中的迁移任务".to_string())?;
@@ -1963,27 +2057,10 @@ pub fn confirm_delete_source(source_path: &Path) -> Result<(), String> {
         ));
     }
 
-    // 获取 _old 路径（如果日志中没有 renamed_source_path，则推导）
-    let deduced_old_path = job.renamed_source_path.clone()
-        .unwrap_or_else(|| {
-            eprintln!("警告：Linked 状态缺少 renamed_source_path，尝试推导");
-            make_old_path(source_path)
-        });
+    // 尽力删除 _old 目录（部分失败不阻止流程完成）
+    let result = delete_old_source_best_effort(&job);
 
-    // 删除 _old 目录（Junction 安全删除）
-    if deduced_old_path.exists() {
-        remove_dir_all_with_detail(&deduced_old_path)
-            .map_err(|(e, failed_path)| {
-                let file_info = failed_path.map(|p| {
-                    let rel = p.strip_prefix(&deduced_old_path).unwrap_or(&p).to_string_lossy();
-                    format!("，失败的文件: {}", rel)
-                }).unwrap_or_default();
-                format!("删除旧源目录失败: {}{}{}", e, file_info,
-                    detect_locks_with_fallback(&deduced_old_path))
-            })?;
-    }
-
-    // 标记 Completed
+    // 标记 Completed（无论 _old 是否完全删除，迁移功能已完成）
     job.stage = MigrationStage::Completed;
     journal::write_job(&job)?;
 
@@ -1993,16 +2070,19 @@ pub fn confirm_delete_source(source_path: &Path) -> Result<(), String> {
         let _ = fs::remove_file(mp);
     }
 
-    Ok(())
+    Ok(result)
 }
 
 /// 即时回滚：从 Linked/SourceRenamed/Finalized 状态回滚
 ///
 /// 无需数据拷贝，仅通过重命名/删除操作即可恢复。
-/// - Linked: 删除 Junction → rename _old 回原路径
-/// - SourceRenamed: rename _old 回原路径（可选：rename final→tmp）
-/// - Finalized: rename final→tmp（源仍在原位，只需清理 final）
-pub fn rollback_migration_instant(source_path: &Path) -> Result<(), String> {
+/// - Linked: 删除 Junction → rename _old 回原路径 → 尽力清理 final
+/// - SourceRenamed: rename _old 回原路径 → 尽力清理 final
+/// - Finalized: 尽力清理 final（源仍在原位）
+///
+/// 关键步骤（删 Junction / rename _old）失败则报错；清理 final 用 best_effort，
+/// 部分失败不阻止回滚完成，返回 DeleteResult 含失败列表。
+pub fn rollback_migration_instant(source_path: &Path) -> Result<DeleteResult, String> {
     // 读取当前任务
     let job = journal::read_job()?
         .ok_or_else(|| "没有进行中的迁移任务".to_string())?;
@@ -2015,14 +2095,14 @@ pub fn rollback_migration_instant(source_path: &Path) -> Result<(), String> {
         ));
     }
 
-    match job.stage {
+    let result = match job.stage {
         MigrationStage::Linked => {
-            // 1. 删除 Junction
+            // 1. 删除 Junction（关键步骤，失败则报错）
             if win_util::is_junction(source_path) {
                 win_util::delete_junction(source_path)?;
             }
 
-            // 2. rename _old 回原路径
+            // 2. rename _old 回原路径（关键步骤，失败则报错）
             let old_path = job.renamed_source_path.as_ref()
                 .cloned()
                 .unwrap_or_else(|| make_old_path(source_path));
@@ -2040,20 +2120,11 @@ pub fn rollback_migration_instant(source_path: &Path) -> Result<(), String> {
                 ));
             }
 
-            // 3. 清理 final 目录（数据已回到源位置，final 不再需要）
-            if job.final_target_path.exists() {
-                let _ = remove_dir_all_with_detail(&job.final_target_path);
-            }
-
-            // 清理
-            let _ = journal::clear_job();
-            if let Some(mp) = &job.manifest_path {
-                let _ = fs::remove_file(mp);
-            }
-            Ok(())
+            // 3. 尽力清理 final 目录（冗余副本，部分失败不阻止回滚）
+            cleanup_final_best_effort(&job.final_target_path)
         }
         MigrationStage::SourceRenamed => {
-            // 1. rename _old 回原路径
+            // 1. rename _old 回原路径（关键步骤，失败则报错）
             let old_path = job.renamed_source_path.as_ref()
                 .cloned()
                 .unwrap_or_else(|| make_old_path(source_path));
@@ -2071,36 +2142,25 @@ pub fn rollback_migration_instant(source_path: &Path) -> Result<(), String> {
                 ));
             }
 
-            // 2. 清理 final 目录（源已恢复，final 不再需要）
-            if job.final_target_path.exists() {
-                let _ = remove_dir_all_with_detail(&job.final_target_path);
-            }
-
-            // 清理
-            let _ = journal::clear_job();
-            if let Some(mp) = &job.manifest_path {
-                let _ = fs::remove_file(mp);
-            }
-            Ok(())
+            // 2. 尽力清理 final 目录（冗余副本，部分失败不阻止回滚）
+            cleanup_final_best_effort(&job.final_target_path)
         }
         MigrationStage::Finalized => {
-            // 源仍在原位，只需清理 final 目录
-            if job.final_target_path.exists() {
-                let _ = remove_dir_all_with_detail(&job.final_target_path);
-            }
-
-            // 清理
-            let _ = journal::clear_job();
-            if let Some(mp) = &job.manifest_path {
-                let _ = fs::remove_file(mp);
-            }
-            Ok(())
+            // 源仍在原位，只需尽力清理 final 目录
+            cleanup_final_best_effort(&job.final_target_path)
         }
-        other => Err(format!(
+        other => return Err(format!(
             "即时回滚不支持 {:?} 状态，仅支持 Linked/SourceRenamed/Finalized",
             other
         ))
+    };
+
+    // 清理
+    let _ = journal::clear_job();
+    if let Some(mp) = &job.manifest_path {
+        let _ = fs::remove_file(mp);
     }
+    Ok(result)
 }
 
 /// 执行已完成迁移的撤销恢复（需二次确认，需数据拷贝）
@@ -2769,5 +2829,146 @@ mod tests {
 
         let _ = fs::remove_dir_all(&source_dir);
         let _ = fs::remove_dir_all(target_drive);
+    }
+
+    // ===== T1: remove_dir_all_best_effort 遇到被占用文件跳过继续删除其他文件 =====
+    #[test]
+    fn test_remove_dir_all_best_effort_skips_locked_and_continues() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = make_test_root("best_effort_locked");
+        let dir = root.join("old");
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("deletable.txt"), "can delete").unwrap();
+        let locked_path = dir.join("sub/locked.txt");
+        fs::write(&locked_path, "locked").unwrap();
+        // 独占打开文件（share_mode=0），模拟文件被占用导致删除失败（os error 5/32）
+        let _guard = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&locked_path)
+            .unwrap();
+
+        let failures = remove_dir_all_best_effort(&dir);
+
+        // 断言1：deletable.txt 应被删除（说明继续了删除流程，未因 locked.txt 中止）
+        assert!(!dir.join("deletable.txt").exists(), "deletable.txt 应被删除");
+        // 断言2：failures 应包含 locked.txt（说明失败被收集）
+        assert_eq!(failures.len(), 1, "应有1个删除失败项，实际: {:?}", failures);
+        assert!(failures[0].0.ends_with("locked.txt"), "失败项应为 locked.txt");
+        // _guard 在此 drop，释放占用
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ===== T2: remove_dir_all_best_effort 全部删除成功返回空失败列表 =====
+    #[test]
+    fn test_remove_dir_all_best_effort_all_success_returns_empty() {
+        let root = make_test_root("best_effort_all_success");
+        let dir = root.join("old");
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("file1.txt"), "a").unwrap();
+        fs::write(dir.join("sub/file2.txt"), "b").unwrap();
+
+        let failures = remove_dir_all_best_effort(&dir);
+
+        assert!(failures.is_empty(), "全部成功应返回空失败列表，实际: {:?}", failures);
+        assert!(!dir.exists(), "目录应被完全删除");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ===== T3: remove_dir_all_best_effort 遇到 Junction 只删链接点不跟入 =====
+    #[test]
+    fn test_remove_dir_all_best_effort_junction_not_followed() {
+        let root = make_test_root("best_effort_junction");
+        let dir = root.join("old");
+        let real_data = root.join("real_data");
+        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&real_data).unwrap();
+        fs::write(real_data.join("important.txt"), "must not be deleted").unwrap();
+        // 在 dir 下创建指向 real_data 的 Junction
+        let junction_path = dir.join("link");
+        win_util::create_junction(&junction_path, &real_data).unwrap();
+        assert!(win_util::is_junction(&junction_path), "前置：Junction 应创建成功");
+        fs::write(dir.join("normal.txt"), "normal").unwrap();
+
+        let failures = remove_dir_all_best_effort(&dir);
+
+        // 断言1：无失败（Junction 链接点应被安全删除）
+        assert!(failures.is_empty(), "Junction 删除应无失败，实际: {:?}", failures);
+        // 断言2：real_data 中的数据未被删除（未跟入）
+        assert!(real_data.join("important.txt").exists(), "Junction 目标数据不应被删除");
+        assert_eq!(
+            fs::read_to_string(real_data.join("important.txt")).unwrap(),
+            "must not be deleted",
+            "Junction 目标数据内容应完整"
+        );
+        let _ = fs::remove_dir_all(&real_data);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ===== T4: delete_old_source_best_effort 部分文件删失败仍返回成功+失败列表 =====
+    #[test]
+    fn test_delete_old_source_best_effort_partial_failure_returns_result() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use crate::journal::{PendingJob, MigrationStage};
+        let root = make_test_root("delete_old_partial");
+        let source_path = root.join("source");
+        let old_path = root.join("source._cdisklinker_old");
+        fs::create_dir_all(old_path.join("sub")).unwrap();
+        fs::write(old_path.join("deletable.txt"), "ok").unwrap();
+        let locked_path = old_path.join("sub/locked.txt");
+        fs::write(&locked_path, "locked").unwrap();
+        // 独占打开模拟占用
+        let _guard = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&locked_path)
+            .unwrap();
+
+        let job = PendingJob {
+            job_id: "test".to_string(),
+            source_path: source_path.clone(),
+            target_path: root.join("tmp"),
+            final_target_path: root.join("final"),
+            stage: MigrationStage::Linked,
+            manifest_path: None,
+            renamed_source_path: Some(old_path.clone()),
+        };
+
+        let result = delete_old_source_best_effort(&job);
+
+        // 断言1：返回 Ok 且 fully_deleted=false（部分失败）
+        assert!(!result.fully_deleted, "部分失败应 fully_deleted=false");
+        // 断言2：failed_files 含 locked.txt
+        assert_eq!(result.failed_files.len(), 1, "应有1个失败文件，实际: {:?}", result.failed_files);
+        assert!(result.failed_files[0].contains("locked.txt"), "失败文件应为 locked.txt");
+        // 断言3：deletable.txt 应被删除（说明继续删除了其他文件）
+        assert!(!old_path.join("deletable.txt").exists(), "deletable.txt 应被删除");
+        // _guard drop 释放占用
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ===== T5: cleanup_final_best_effort 部分文件删失败仍返回结果 =====
+    #[test]
+    fn test_cleanup_final_best_effort_partial_failure_returns_result() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = make_test_root("cleanup_final_partial");
+        let final_path = root.join("final");
+        fs::create_dir_all(final_path.join("sub")).unwrap();
+        fs::write(final_path.join("deletable.txt"), "ok").unwrap();
+        let locked_path = final_path.join("sub/locked.txt");
+        fs::write(&locked_path, "locked").unwrap();
+        let _guard = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&locked_path)
+            .unwrap();
+
+        let result = cleanup_final_best_effort(&final_path);
+
+        assert!(!result.fully_deleted, "部分失败应 fully_deleted=false");
+        assert_eq!(result.failed_files.len(), 1, "应有1个失败文件，实际: {:?}", result.failed_files);
+        assert!(result.failed_files[0].contains("locked.txt"), "失败文件应为 locked.txt");
+        assert!(!final_path.join("deletable.txt").exists(), "deletable.txt 应被删除");
+        let _ = fs::remove_dir_all(&root);
     }
 }

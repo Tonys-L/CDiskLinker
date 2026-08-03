@@ -136,6 +136,75 @@ Junction 本身就是目录型重解析点，`is_junction` 已隐含"是目录"�
 
 ---
 
+### 1.4 删除冗余副本应采用 best_effort 策略（os error 5 不应阻止流程完成）
+
+**问题**: 用户确认迁移正常后点击"删除旧源"，删除 `_cdisklinker_old` 目录时遇到单个文件被占用（os error 5 拒绝访问），整个删除流程立即中止，迁移无法进入 Completed 状态。同时删除大目录期间 UI 无任何反馈，用户感觉软件卡死。
+
+**原因**:
+1. `remove_dir_all_with_detail` 遇到第一个错误即返回，不继续删除其他文件
+2. `confirm_delete_source` 用 `?` 传播错误 → 删除中止 → 不进入 Completed
+3. 这与 flows.md 异常处理表原意"忽略 + 保留日志 + 报错"不一致
+4. `confirm_delete_source` / `rollback_migration_instant` 命令同步执行且不发 progress 事件，大目录删除期间 UI 无反馈
+
+**根本认知**: `_cdisklinker_old` 和回滚时的 `final` 都是**冗余副本**（受 INV-004 保护），单个文件删不掉不应阻止迁移流程完成。用户关心的是"迁移功能是否完成"，而非"冗余副本是否清理干净"。残留文件可通过提示用户手动清理。
+
+**解决方案**: 引入 best_effort 删除策略，分三层：
+
+1. **`remove_dir_all_best_effort`**：递归删除，遇到错误收集到 failures 列表而非返回，继续删除其他文件
+2. **`delete_old_source_best_effort` / `cleanup_final_best_effort`**：封装 best_effort 删除 + 失败列表格式化，返回 `DeleteResult { fully_deleted, failed_files }`
+3. **`confirm_delete_source` / `rollback_migration_instant`**：调用 best_effort 函数，无论是否有失败都推进状态（Completed / 回滚完成），返回 DeleteResult 给前端
+
+关键步骤（删 Junction / rename _old）失败仍报错，因为这些是数据安全关键操作，不像删冗余副本可容忍。
+
+**UI 反馈优化**:
+- 三个命令改为 `async fn` + `spawn_blocking`，避免阻塞 UI 线程
+- 删除/回滚期间发送 `migration-progress` 事件，confirm dialog 内显示进度文案 + spinner
+- 部分失败时前端 `addLog('warning', ...)` 提示用户手动清理残留文件列表
+
+**关键代码**:
+```rust
+// best_effort：收集失败而非中止
+fn remove_dir_all_best_effort(dir: &Path) -> Vec<(PathBuf, String)> {
+    let mut failures = Vec::new();
+    fn remove_recursive(path: &Path, failures: &mut Vec<(PathBuf, String)>) {
+        if win_util::is_junction(path) {
+            if let Err(e) = fs::remove_dir(path) { failures.push((path.to_path_buf(), format!("{}", e))); }
+        } else if path.is_dir() {
+            if let Ok(entries) = fs::read_dir(path) {
+                for entry in entries.flatten() { remove_recursive(&entry.path(), failures); }
+            }
+            if let Err(e) = fs::remove_dir(path) { failures.push((path.to_path_buf(), format!("{}", e))); }
+        } else {
+            if let Err(e) = fs::remove_file(path) { failures.push((path.to_path_buf(), format!("{}", e))); }
+        }
+    }
+    remove_recursive(dir, &mut failures);
+    failures
+}
+```
+
+**影响文件**:
+- `src-tauri/src/engine.rs` — 新增 `remove_dir_all_best_effort`、`delete_old_source_best_effort`、`cleanup_final_best_effort`、`DeleteResult`；重构 `confirm_delete_source` / `rollback_migration_instant` 返回 `DeleteResult`
+- `src-tauri/src/commands.rs` — 三个命令改 async + spawn_blocking + 发 progress 事件
+- `src/stores/app.ts` — 适配 `DeleteResult`，部分失败时 warning 提示
+- `src/views/MainView.vue` — confirm dialog 新增进度文案区域
+- `src/i18n/locales/zh-CN.ts` / `en-US.ts` — 新增 `oldSourceDeletedWithResidue`、`instantRollbackDoneWithResidue`、`processing` 文案
+
+**TDD 要点**: 用 `OpenOptions::new().share_mode(0).open()` 独占打开文件模拟 os error 5（文件占用），而非用只读属性（Rust 标准库 `remove_file` 会自动去掉只读属性再删除，只读文件不产生失败）。
+
+**关联不变量**: INV-004（final 是唯一权威副本，_old 是冗余副本可安全删除）
+
+**测试覆盖**:
+- `test_remove_dir_all_best_effort_skips_locked_and_continues`：被占用文件跳过继续删除
+- `test_remove_dir_all_best_effort_all_success_returns_empty`：全部成功返回空列表
+- `test_remove_dir_all_best_effort_junction_not_followed`：Junction 只删链接点不跟入
+- `test_delete_old_source_best_effort_partial_failure_returns_result`：部分失败返回 DeleteResult
+- `test_cleanup_final_best_effort_partial_failure_returns_result`：回滚清理 final 部分失败返回结果
+
+**日期**: 2026-08-03
+
+---
+
 ## 变更记录
 
 | 日期 | 变更内容 | 变更人 | 关联变更 |
@@ -143,3 +212,4 @@ Junction 本身就是目录型重解析点，`is_junction` 已隐含"是目录"�
 | 2026-07-24 | 初始版本，记录迁移释放空间与统计大小差异的调查结论 | Antigravity | — |
 | 2026-07-26 | 新增 1.2，记录 SHA256 校验性能优化与快速模式设计 | Antigravity | #TASK-sha256-opt 同步更新 flows.md、boundaries.md |
 | 2026-08-02 | 新增 1.3，记录流式哈希拷贝中 Junction 检测失效 bug 与修复 | Antigravity | #TASK-engine-tests |
+| 2026-08-03 | 新增 1.4，记录删除冗余副本 best_effort 策略与 UI 进度反馈优化 | Antigravity | #TASK-best-effort-delete 同步更新 flows.md |

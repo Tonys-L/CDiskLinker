@@ -171,6 +171,11 @@
           </div>
         </div>
         <p class="confirm-warning">{{ t('migration.confirmWarning') }}</p>
+        <div v-if="store.migrationStatus === 'Copying' || store.migrationStatus === 'RollingBack'"
+             class="confirm-progress">
+          <n-spin size="small" />
+          <span class="confirm-progress-text">{{ store.migrationDetail || t('log.processing') }}</span>
+        </div>
       </div>
       <template #footer>
         <div class="confirm-dialog-footer">
@@ -544,5 +549,21 @@ onMounted(async () => {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.confirm-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: var(--info-color, #2080f0);
+  border-radius: 4px;
+  color: #fff;
+  font-size: 13px;
+}
+
+.confirm-progress-text {
+  flex: 1;
 }
 </style>

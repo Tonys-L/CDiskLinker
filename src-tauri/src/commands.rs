@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use tauri::{AppHandle, Emitter};
 
 use crate::scanner::{self, DirectoryRating, ScanEntry};
-use crate::engine::{self, MigrationProgress};
+use crate::engine::{self, MigrationProgress, DeleteResult};
 use crate::win_util;
 
 // === 数据模型 ===
@@ -378,10 +378,30 @@ pub fn rollback_journal(app: AppHandle) -> Result<String, String> {
 }
 
 /// 用户确认迁移正常，删除旧源目录（_cdisklinker_old）
+///
+/// 异步执行：通过 spawn_blocking 在后台线程删除大目录，避免阻塞 UI 线程。
+/// 删除期间持续发送 migration-progress 事件，UI 据此显示进度文案。
 #[tauri::command]
-pub fn confirm_delete_source(path: String) -> Result<(), String> {
+pub async fn confirm_delete_source(app: AppHandle, path: String) -> Result<DeleteResult, String> {
+    let app_handle = app.clone();
+    let _ = app_handle.emit("migration-progress", serde_json::json!({
+        "stage": "Copying",
+        "progress": 95.0,
+        "detail": "正在删除旧源目录...",
+        "detail_key": "log.deletingOldSource",
+    }));
     let source_path = PathBuf::from(&path);
-    engine::confirm_delete_source(&source_path)
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        engine::confirm_delete_source(&source_path)
+    }).await
+        .map_err(|e| format!("删除任务执行失败: {}", e))??;
+    let _ = app_handle.emit("migration-progress", serde_json::json!({
+        "stage": "Idle",
+        "progress": 100.0,
+        "detail": "迁移完成",
+        "detail_key": "log.oldSourceDeleted",
+    }));
+    Ok(result)
 }
 
 /// 从 journal 恢复的 Linked 状态下，确认删除旧源（无参数版本）
@@ -389,7 +409,7 @@ pub fn confirm_delete_source(path: String) -> Result<(), String> {
 /// 与 confirm_delete_source 的区别：从 journal 读取 source_path，无需前端传参。
 /// 适用于应用重启后 JournalBar 显示的 Linked 状态恢复场景。
 #[tauri::command]
-pub fn confirm_journal_complete(app: AppHandle) -> Result<String, String> {
+pub async fn confirm_journal_complete(app: AppHandle) -> Result<String, String> {
     let app_handle = app.clone();
     let _ = app_handle.emit("migration-progress", serde_json::json!({
         "stage": "Copying",
@@ -404,24 +424,49 @@ pub fn confirm_journal_complete(app: AppHandle) -> Result<String, String> {
         .ok_or_else(|| "err.noJournalFound".to_string())?;
 
     let source_path = PathBuf::from(&job.source_path);
-    engine::confirm_delete_source(&source_path)?;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        engine::confirm_delete_source(&source_path)
+    }).await
+        .map_err(|e| format!("删除任务执行失败: {}", e))??;
 
+    let msg = if result.fully_deleted {
+        "log.oldSourceFullyDone".to_string()
+    } else {
+        "log.oldSourceDeletedWithResidue".to_string()
+    };
     let _ = app_handle.emit("migration-progress", serde_json::json!({
         "stage": "Idle",
         "progress": 100.0,
-        "detail": "旧源已删除，迁移完成！",
+        "detail": "迁移完成",
         "detail_key": "log.oldSourceDeleted",
     }));
-
-    Ok("log.oldSourceFullyDone".to_string())
+    Ok(msg)
 }
 
 /// 即时回滚迁移（秒级，无需数据拷贝）
 /// 适用于 Linked / SourceRenamed / Finalized 状态
+///
+/// 异步执行：删 final 目录可能耗时，通过 spawn_blocking 避免阻塞 UI 线程。
 #[tauri::command]
-pub fn rollback_migration_instant(path: String) -> Result<(), String> {
+pub async fn rollback_migration_instant(app: AppHandle, path: String) -> Result<DeleteResult, String> {
+    let app_handle = app.clone();
+    let _ = app_handle.emit("migration-progress", serde_json::json!({
+        "stage": "RollingBack",
+        "progress": 0.0,
+        "detail": "正在回滚...",
+        "detail_key": "log.rollingBack",
+    }));
     let source_path = PathBuf::from(&path);
-    engine::rollback_migration_instant(&source_path)
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        engine::rollback_migration_instant(&source_path)
+    }).await
+        .map_err(|e| format!("回滚任务执行失败: {}", e))??;
+    let _ = app_handle.emit("migration-progress", serde_json::json!({
+        "stage": "Idle",
+        "progress": 0.0,
+        "detail": "",
+    }));
+    Ok(result)
 }
 
 #[tauri::command]

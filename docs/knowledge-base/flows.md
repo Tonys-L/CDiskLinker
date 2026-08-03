@@ -77,7 +77,7 @@ flowchart TD
 | 建 Junction | mklink 失败 | SourceRenamed | **保留 final + 保留 _old + 清日志 + 报错** | final完整，可即时回滚（rename _old→源名） |
 | 写日志 | 写 Linked 失败 | SourceRenamed | 清理日志 | 迁移已完成 |
 | 用户确认 | 用户选择回滚 | Linked | 即时回滚: 删 Junction + rename _old→源名 | 源完整还原 |
-| 删除 _old | 删除失败 | Linked | **忽略 + 保留日志 + 报错** | 迁移已完成，_old可手动删除 |
+| 删除 _old | 删除失败（os error 5 等） | Linked | **尽力删除（best_effort）+ 进入 Completed + 清理日志 + 返回失败列表提示用户手动清理残留** | 迁移已完成，_old 部分残留可手动删除 |
 | 写日志 | 写 Completed 失败 | Linked | 忽略 | 迁移已完成 |
 | 清理日志 | 删除日志失败 | Completed | 忽略（迁移已成功） | 迁移已完成 |
 
@@ -130,6 +130,8 @@ flowchart TD
 | `Linked` | 删 Junction + rename _old→源名 + 删除 final | 源完整还原 | 极快（仅删链接 + rename + 删目录） |
 
 ⚠️ 回滚时删除 final 目录是安全的，因为此时源目录（或 _old）是权威副本，final 仅是冗余副本。
+
+⚠️ 回滚时删除 final 采用 best_effort 策略：部分文件删不掉（os error 5 等）不阻止回滚完成，返回失败列表提示用户手动清理残留。关键步骤（删 Junction / rename _old）失败仍报错。
 
 ---
 
@@ -240,3 +242,4 @@ stateDiagram-v2
 | 2026-07-23 | 删除源失败改为保留 Copied 状态（不再删 tmp），支持重试恢复；扫描大小改为异步计算 | Antigravity | #TASK-resume-and-async-scan |
 | 2026-07-25 | V2 迁移流程：5 阶段→6 阶段（SourceDeleted/Renamed → Finalized/SourceRenamed，新增 Completed）；源目录改为重命名而非删除，支持即时回滚；新增即时回滚流程 | Antigravity | #TASK-v2-migration-flow 同步更新 constraints.md |
 | 2026-07-26 | 新增"校验方式"章节，记录流式哈希优化与快速模式；更新流程图与异常处理表区分两种模式 | Antigravity | #TASK-sha256-opt 同步更新 boundaries.md、lessons/migration.md |
+| 2026-08-03 | 删除 _old / 删除 final 改为 best_effort 策略：部分文件删不掉不阻止流程完成，返回失败列表提示用户手动清理；同步更新异常处理表与即时回滚流程说明 | Antigravity | #TASK-best-effort-delete 同步更新 lessons/migration.md |
