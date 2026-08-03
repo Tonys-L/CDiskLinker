@@ -41,3 +41,13 @@ jobs:
           prerelease: false
           # tauri-action 会自动上传 latest.json 与 .sig 文件到 Release 资产
           args: --target x86_64-pc-windows-msvc
+
+      # 上传固定资产名资产，供官网 /releases/latest/download/ 直下载使用
+      - name: Upload fixed-name asset for latest download
+        run: |
+          $setup = Get-ChildItem src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          if (-not $setup) { throw "NSIS setup.exe not found" }
+          Copy-Item $setup.FullName "CDiskLinker-Setup.exe"
+          gh release upload ${{ github.ref_name }} "CDiskLinker-Setup.exe" --clobber --repo ${{ github.repository }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -111,3 +111,18 @@ git push origin main --tags
 - `tauri-apps/tauri-action@v0` 使用主版本标签，兼顾稳定性与新特性。如遇破坏性变更，需锁定具体 commit 或版本号。
 - workflow 仅授予 `contents: write` 最小权限，遵循最小权限原则。
 - 如构建失败，在 GitHub Actions 页面查看日志排查，常见原因为依赖安装失败或 Rust 编译错误。
+
+## 固定资产名约定（官网直下载）
+
+为保证官网"点击即下载最新版"体验，每次发版除 tauri-action 自动生成的带版本号资产外，workflow 额外上传一个**固定资产名** `CDiskLinker-Setup.exe`（NSIS 安装包）到同一 Release。
+
+- 官网下载按钮链接 `https://github.com/Tonys-L/CDiskLinker/releases/latest/download/CDiskLinker-Setup.exe` 始终指向最新 Release 的该资产。
+- 该模式与 `latest.json`（自动更新端点）使用相同的 GitHub 原生重定向机制。
+- 实现：`release.yml` 中 `Upload fixed-name asset for latest download` step，用 glob `*-setup.exe` 匹配 NSIS 产物后重命名上传。
+- 资产命名固定，不得带版本号；如需更换安装包类型（如改为 MSI），需同步更新官网链接与本约定。
+
+## 变更记录
+
+| 日期 | 变更内容 | 变更人 | 关联变更 |
+|------|----------|--------|----------|
+| 2026-08-03 | 新增"固定资产名约定"小节，记录 CDiskLinker-Setup.exe 直下载方案 | Antigravity | #TASK-direct-download |
