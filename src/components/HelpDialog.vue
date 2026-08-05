@@ -14,6 +14,12 @@
     @update:show="(v: boolean) => (store.helpVisible = v)"
   >
     <div class="help-body">
+      <!-- 当前版本号 -->
+      <div v-if="store.currentVersion" class="help-current-version">
+        <span class="version-label">{{ t('help.currentVersion') }}:</span>
+        <span class="version-value">v{{ store.currentVersion }}</span>
+      </div>
+
       <!-- 软件作用 -->
       <section class="help-section">
         <h3 class="help-section-title">{{ t('help.whatIs') }}</h3>
@@ -47,6 +53,22 @@
           <li>{{ t('help.note3') }}</li>
           <li>{{ t('help.note4') }}</li>
         </ul>
+      </section>
+
+      <!-- 相关链接 -->
+      <section class="help-section">
+        <h3 class="help-section-title">{{ t('help.links') }}</h3>
+        <div class="help-links">
+          <n-button text type="primary" @click="store.openExternalLink('https://cdisklinker.com')">
+            🌐 {{ t('help.website') }}
+          </n-button>
+          <n-button text type="primary" @click="store.openExternalLink('https://github.com/Tonys-L/CDiskLinker')">
+            🐙 GitHub
+          </n-button>
+          <n-button text type="primary" @click="store.openExternalLink('https://github.com/Tonys-L/CDiskLinker/releases')">
+            📦 {{ t('help.releases') }}
+          </n-button>
+        </div>
       </section>
     </div>
 
@@ -90,6 +112,34 @@ function checkUpdate() {
   max-height: 60vh;
   overflow-y: auto;
   padding-right: 4px;
+}
+
+/* 当前版本号显示 */
+.help-current-version {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 6px 10px;
+  background: var(--bg-tertiary, #243447);
+  border-radius: 6px;
+}
+
+.version-label {
+  color: var(--text-secondary, #adb5bd);
+}
+
+.version-value {
+  color: var(--accent, #4dabf7);
+  font-weight: 600;
+}
+
+/* 相关链接区 */
+.help-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding-left: 4px;
 }
 
 .help-section {

@@ -205,6 +205,10 @@ export default {
   help: {
     title: '使用帮助',
     buttonTitle: '查看帮助',
+    currentVersion: '当前版本',
+    links: '相关链接',
+    website: '官网',
+    releases: '历史版本',
     whatIs: 'CDiskLinker 是什么',
     whatIsBody: '一款通过 NTFS 目录联接(Junction)将 C 盘大文件夹物理迁移到其他盘、并在原位置建立链接的 Windows 工具。迁移后软件仍能通过原路径访问数据，但实际占用已转移到其他盘，从而释放 C 盘空间。',
     steps: '基本用法',

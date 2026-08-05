@@ -32,9 +32,9 @@
           <span class="update-label">{{ t('update.version') }}:</span>
           <span class="update-version">v{{ store.updateInfo.version }}</span>
         </div>
-        <div class="update-notes-block">
+        <div v-if="store.updateInfo.body" class="update-notes-block">
           <div class="update-label">{{ t('update.notes') }}:</div>
-          <div class="update-notes-content">{{ store.updateInfo.body || '-' }}</div>
+          <div class="update-notes-content">{{ store.updateInfo.body }}</div>
         </div>
       </div>
 

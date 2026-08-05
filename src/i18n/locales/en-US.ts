@@ -204,6 +204,10 @@ export default {
   help: {
     title: 'Help',
     buttonTitle: 'View help',
+    currentVersion: 'Current Version',
+    links: 'Links',
+    website: 'Website',
+    releases: 'Releases',
     whatIs: 'What is CDiskLinker',
     whatIsBody: 'A Windows tool that physically migrates large C drive folders to another drive via NTFS Directory Junctions, and creates a link at the original location. After migration, software can still access data via the original path, but the actual storage has moved to another drive, freeing up C drive space.',
     steps: 'Basic Usage',

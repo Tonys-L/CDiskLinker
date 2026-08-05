@@ -28,6 +28,8 @@ const naiveDateLocale = computed(() => (locale.value === 'zh-CN' ? dateZhCN : da
 // 遵循"软件首次打开要弹出帮助框"的用户需求
 onMounted(() => {
   store.initHelpOnFirstLaunch()
+  // 加载当前版本号（供帮助页等显示）
+  void store.loadCurrentVersion()
 })
 </script>
 

@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import { ref, computed, shallowRef } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { getVersion } from '@tauri-apps/api/app'
+import { open as openUrl } from '@tauri-apps/plugin-shell'
 import { check, type Update } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 import i18n from '../i18n'
@@ -155,6 +157,8 @@ export const useAppStore = defineStore('app', () => {
   const confirmTargetPath = ref('')
   // 帮助对话框：首次启动自动弹出，或用户点击右上角 "?" 按钮触发
   const helpVisible = ref(false)
+  // 当前应用版本号（来自 tauri.conf.json，启动时加载）
+  const currentVersion = ref('')
   // 大目录排行榜：递归扫描 C 盘，按大小降序排列的 Top 20 目录
   const largeDirs = ref<LargeDirEntry[]>([])
   const largeDirsScanning = ref(false)
@@ -583,6 +587,24 @@ const updateInfo = shallowRef<Update | null>(null)
 
   // === 帮助与更新 ===
 
+  // 加载当前应用版本号（来自 tauri.conf.json），供帮助页等显示
+  async function loadCurrentVersion() {
+    try {
+      currentVersion.value = await getVersion()
+    } catch {
+      currentVersion.value = ''
+    }
+  }
+
+  // 通过系统默认浏览器打开外部 URL（capabilities 已配置 shell:allow-open）
+  async function openExternalLink(url: string) {
+    try {
+      await openUrl(url)
+    } catch (e) {
+      addLog('warn', `打开链接失败: ${e}`)
+    }
+  }
+
   // 首次启动检测：若用户未看过帮助，则自动弹出。
   // 由 App.vue 在 onMounted 中调用，遵循"软件首次打开要弹出帮助框"约束。
   function initHelpOnFirstLaunch() {
@@ -860,6 +882,7 @@ const updateInfo = shallowRef<Update | null>(null)
     selectedNodes, selectedSafeNodes, selectedWarningNodes,
     totalSelectedSize, canMigrate,
     formatSize,
+    currentVersion, loadCurrentVersion, openExternalLink,
     checkAdmin, elevateSelf, refreshDiskInfo, scanDisk,
     scanLargeDirs, selectLargeDir,
     loadMigrationHistory, restoreFromArchive, rebuildArchiveMeta, rebuildJunction,

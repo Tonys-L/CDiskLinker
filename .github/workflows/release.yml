@@ -26,6 +26,17 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # 从 tag 指向 commit 的 message 提取 release notes（首行 + body）
+      # 作为 GitHub Release body，进而写入 latest.json 的 notes 字段供客户端显示
+      - name: Extract release notes from commit
+        id: release_notes
+        shell: bash
+        run: |
+          MSG=$(git log -1 --pretty=%B ${{ github.sha }})
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          echo "$MSG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Build and publish Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
@@ -37,6 +48,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'CDiskLinker ${{ github.ref_name }}'
+          releaseBody: ${{ steps.release_notes.outputs.body }}
           releaseDraft: false
           prerelease: false
           # tauri-action 会自动上传 latest.json 与 .sig 文件到 Release 资产
