@@ -24,6 +24,10 @@ pub struct ScanEntry {
     pub depth: i32,
     pub expanded: bool,
     pub has_children: bool,
+    /// 是否为本软件迁移过的目录（Junction 且在迁移历史中）
+    /// 用于 UI 标记已迁移目录，提供软件内恢复入口
+    #[serde(default)]
+    pub is_migrated_by_us: bool,
 }
 
 /// 检查路径是否属于绝对禁止的系统黑名单目录
@@ -164,6 +168,10 @@ pub fn scan_subdirectories(parent_path: &Path, depth: i32) -> Vec<ScanEntry> {
                     // Junction 不展开；普通目录正常检测子目录
                     let has_children = if is_junction { false } else { has_subdirectories(&path) };
 
+                    // 对 Junction 查询迁移历史，判断是否为本软件迁移的目录
+                    let is_migrated_by_us = is_junction
+                        && crate::migration_history::find_by_source_path(&path).is_some();
+
                     results.push(ScanEntry {
                         path,
                         name,
@@ -173,6 +181,7 @@ pub fn scan_subdirectories(parent_path: &Path, depth: i32) -> Vec<ScanEntry> {
                         depth,
                         expanded: false,
                         has_children,
+                        is_migrated_by_us,
                     });
                 }
             }

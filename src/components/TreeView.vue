@@ -64,7 +64,29 @@
         />
         <!-- 文件夹图标 -->
         <span class="folder-icon" :class="{ junction: node.is_junction }">
-          {{ node.is_junction ? '🔗' : '📁' }}
+          <!-- 本软件迁移：文件夹 + 穿出的向右箭头（单 SVG 图标） -->
+          <svg
+            v-if="node.is_junction && node.is_migrated_by_us"
+            class="migrated-icon"
+            viewBox="0 0 16 16"
+            width="14"
+            height="14"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <!-- 文件夹底部（右下角留缺口让箭头穿出） -->
+            <path d="M1.5 4.5 L1.5 12.5 L8 12.5" />
+            <!-- 文件夹顶部 tab -->
+            <path d="M1.5 5.5 L5 5.5 L6 7 L9 7" />
+            <!-- 向右转移箭头：从文件夹内部穿出 -->
+            <path d="M6.5 10 L13.5 10" />
+            <path d="M11 7.5 L13.5 10 L11 12.5" />
+          </svg>
+          <template v-else>{{ node.is_junction ? '🔗' : '📁' }}</template>
         </span>
         <!-- 名称与大小（搜索时高亮匹配文本） -->
         <span class="node-name" v-html="highlightName(node.name)"></span>
@@ -87,7 +109,13 @@
           :bordered="false"
         >{{ t('tree.forbidden') }}</n-tag>
         <n-tag
-          v-if="node.is_junction"
+          v-if="node.is_junction && node.is_migrated_by_us"
+          size="tiny"
+          type="success"
+          :bordered="false"
+        >{{ t('tree.migratedByUs') }}</n-tag>
+        <n-tag
+          v-else-if="node.is_junction"
           size="tiny"
           type="info"
           :bordered="false"
@@ -319,6 +347,15 @@ function highlightName(name: string): string {
 
 .folder-icon {
   font-size: 14px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* 本软件迁移目录：文件夹 + 穿出箭头（单 SVG 图标）
+   用 success 绿色与"已迁移"标签呼应，区别于普通 Junction（🔗） */
+.folder-icon .migrated-icon {
+  color: var(--success-color, #18a058);
   flex-shrink: 0;
 }
 

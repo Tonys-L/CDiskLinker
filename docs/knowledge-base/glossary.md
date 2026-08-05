@@ -1,6 +1,6 @@
 # 术语表
 
-> **TL;DR**: 核心术语：目录联接（Junction）、双阶段迁移（Two-Phase Migration）、事务日志（Transaction Journal）。⚠️ 注意：目录联接 (Junction) ≠ 符号链接 (Symbolic Link)，两者在跨盘和文件/文件夹层级的支持上存在技术差异。
+> **TL;DR**: 核心术语：目录联接（Junction）、双阶段迁移（Two-Phase Migration）、事务日志（Transaction Journal）、迁移档案（Migration Archive）。⚠️ 注意：目录联接 (Junction) ≠ 符号链接 (Symbolic Link)，两者在跨盘和文件/文件夹层级的支持上存在技术差异。
 
 ---
 
@@ -32,7 +32,24 @@ Windows 操作系统中 NTFS 文件系统特有的重解析点（Reparse Point�
 
 ---
 
+## M
+
+### 迁移档案 (Migration Archive)
+记录一次成功迁移元数据的数据结构（`MigrationArchive`），让软件能识别"这个目录是我迁移的"并提供软件内一键恢复入口。包含档案 ID、源路径、目标路径、迁移时间、Manifest 哈希、文件总数与总大小等字段，并通过 `archive_self_hash`（基于不含本字段的内容计算 SHA256）防篡改。采用双副本设计：自包含档案 + 全局索引。
+
+---
+
+## Q
+
+### 全局索引 (Global Migration Index)
+软件运行目录下的 `migration_history.json` 文件，聚合了所有迁移档案的副本，用于快速查询"哪些目录被本软件迁移过"。与自包含档案构成双副本设计中的"快速查询副本"。一致性原则：当全局索引与自包含档案不一致时，以自包含档案为权威，全局索引可通过扫描各自包含档案重建。
+
+---
+
 ## S
+
+### 自包含档案 (Self-contained Archive)
+写入目标目录根下的隐藏文件 `.cdisklinker_meta.json`，是迁移档案的"跟随数据走"副本。作为身份校验的权威来源：即使全局索引丢失，只要自包含档案存在，就能证明该目录由本软件迁移。包含完整的 `MigrationArchive` 内容并设置隐藏属性。若被用户误删，可从全局索引调用 `rebuild_meta_from_index` 重建。
 
 ### 符号链接 (Symbolic Link)
 与目录联接（Junction）类似的文件系统重定向机制，但符号链接支持文件层面的重定向，且允许使用相对路径。缺点是要求调用进程必须拥有系统级最高管理员或开发者模式权限，且在旧版 Windows 兼容性较弱。本项目的 MVP 阶段（V1.0）不使用符号链接，而使用更稳健的目录联接。
@@ -61,3 +78,4 @@ Windows 操作系统中 NTFS 文件系统特有的重解析点（Reparse Point�
 | 日期 | 变更内容 | 变更人 | 关联变更 |
 |------|----------|--------|----------|
 | 2026-07-21 | 初始化术语表，定义目录联接、事务日志、双阶段迁移等核心术语 | Antigravity | — |
+| 2026-08-04 | 新增迁移档案、自包含档案、全局索引三个术语（双副本档案设计） | Antigravity | #TASK-migration-archive 同步更新 boundaries.md、flows.md |

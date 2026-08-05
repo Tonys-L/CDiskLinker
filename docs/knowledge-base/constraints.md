@@ -104,6 +104,7 @@
 | **INV-006** | 源路径不能是盘符根目录（如 `C:\`），否则 `file_name()` 为空导致目标目录名异常。 | `src/engine.rs` (输入校验 0e) |
 | **INV-007** | 源目录在创建 Junction 之前必须重命名（而非删除），重命名为 `_cdisklinker_old` 后缀。这确保用户发现软件异常时可以即时回滚（重命名回源目录即可），无需重新拷贝数据。 | `src/engine.rs` |
 | **INV-008** | `_cdisklinker_old` 目录在用户明确确认迁移正常之前不得删除。仅当用户确认（`Linked` → `Completed` 转换）后方可删除旧源目录。 | `src/engine.rs` |
+| **INV-009** | 迁移档案双副本写入顺序：必须先写目标目录的自包含档案（`.cdisklinker_meta.json`），再更新全局索引（`migration_history.json`）。此顺序不可反转，确保自包含档案始终是权威来源。一致性原则：当两者不一致时以自包含档案为准，全局索引可重建。档案写入采用 best_effort 策略，失败不阻止迁移完成。 | `src/migration_history.rs` (write_archive) |
 
 ---
 
@@ -154,3 +155,4 @@
 | 2026-07-23 | 新增 INV-004（唯一副本保护）、INV-005（NTFS 强制）、INV-006（根目录禁止） | Antigravity | #TASK-crash-recovery 同步更新 flows.md |
 | 2026-07-25 | V2 迁移流程：更新 INV-001（Junction 前数据须在 final 位置）、INV-004（源重命名后 final 为唯一权威副本）；新增 INV-007（源须重命名非删除）、INV-008（_old 须用户确认后方可删）；技术栈更新为 Vue 3 + Naive UI + Tauri 2.x | Antigravity | #TASK-v2-migration-flow 同步更新 flows.md |
 | 2026-08-02 | 测试约束补充：核心层重点测试项增加流式哈希拷贝（含 Junction 不跟入）、Manifest 生成/校验、Manifest 持久化与 self_hash 篡改检测 | Antigravity | #TASK-engine-tests |
+| 2026-08-04 | 新增 INV-009（迁移档案双副本写入顺序约束） | Antigravity | #TASK-migration-archive 同步更新 boundaries.md、flows.md、glossary.md |

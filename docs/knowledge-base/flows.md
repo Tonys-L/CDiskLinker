@@ -135,6 +135,48 @@ flowchart TD
 
 ---
 
+### 档案恢复流程 (Archive Restore Flow)
+
+**触发条件**: 用户在"迁移历史"面板点击某项的"恢复到源目录"按钮，将已迁移的数据搬回 C 盘原位置。
+
+**前置条件**: 迁移档案存在且通过完整性校验（自包含档案存在 + 自哈希匹配 + 与全局索引一致）。
+
+**核心复用**: 恢复核心逻辑直接调用已有的 `engine::rollback_completed_migration`，不重写。本次仅提供"自动定位 + 自动校验 + 自动清理档案"的包装层。
+
+```mermaid
+flowchart TD
+    A[用户点击恢复] --> B[从全局索引查询档案]
+    B --> C{档案存在?}
+    C -->|否| D[报错: 档案已丢失]
+    C -->|是| E[读取目标目录 .cdisklinker_meta.json]
+    E --> F{自包含档案存在?}
+    F -->|否| G[报错: 目标目录元数据已丢失,无法验证身份]
+    F -->|是| H{archive_self_hash 匹配?}
+    H -->|否| I[报错: 档案被篡改]
+    H -->|是| J{源 Junction 仍存在?}
+    J -->|否| K[报错: 源 Junction 已被删除,无法恢复]
+    J -->|是| L[调用 rollback_completed_migration]
+    L --> M{恢复成功?}
+    M -->|否| N[报错: 恢复失败,档案保留]
+    M -->|是| O[从全局索引移除档案]
+    O --> P[删除目标目录 .cdisklinker_meta.json]
+    P --> Q[完成]
+```
+
+**误删处理**:
+
+| 误删场景 | 表现 | 处理方式 |
+|----------|------|----------|
+| 误删自包含档案（`.cdisklinker_meta.json`） | `list_archives` 返回 `meta_file_exists: false`，UI 显示橙色警告 | 点击"修复档案"按钮，调用 `rebuild_meta_from_index` 从全局索引重建 |
+| 误删全局索引（`migration_history.json`） | 历史列表为空，但目标目录仍有自包含档案 | 本次不实现自动重建（需扫描所有盘符，成本高），作为后续扩展点。用户可手动重新迁移同一目录。 |
+
+**对应代码**:
+- `src/migration_history.rs`（档案读写/校验/重建）
+- `src/commands.rs` 的 `restore_from_archive` / `rebuild_archive_meta` command
+- `src/engine.rs` 的 `rollback_completed_migration`（恢复核心逻辑）
+
+---
+
 ## 状态机
 
 ### 迁移Stage状态机（6 阶段）

@@ -50,6 +50,7 @@ export interface TreeNode {
   is_junction: boolean
   is_visible: boolean
   children_count: number
+  is_migrated_by_us: boolean
 }
 
 export interface DiskInfo {
@@ -83,6 +84,23 @@ export interface LargeDirEntry {
   size_text: string
   rating: string  // "Safe" / "Warning" / "Forbidden"
   depth: number
+}
+
+// 迁移档案列表项（与后端 ArchiveListItem 对应）
+// 后端通过 #[serde(flatten)] 展开了 MigrationArchive 字段 + meta_file_exists 标记
+export interface ArchiveListItem {
+  version: number
+  archive_id: string
+  source_path: string
+  target_path: string
+  created_at: number  // Unix 秒
+  manifest_self_hash: string
+  total_files: number
+  total_size: number
+  software_version: string
+  archive_self_hash: string
+  meta_file_exists: boolean
+  junction_exists: boolean
 }
 
 export type MigrationStatus = 'Idle' | 'Scanning' | 'Copying' | 'RollingBack' | 'Completed' | 'PendingConfirmation'
@@ -140,6 +158,9 @@ export const useAppStore = defineStore('app', () => {
   // 大目录排行榜：递归扫描 C 盘，按大小降序排列的 Top 20 目录
   const largeDirs = ref<LargeDirEntry[]>([])
   const largeDirsScanning = ref(false)
+  // 迁移历史：已迁移目录的档案列表（含目标目录自包含档案的存在性标记）
+  const migrationHistory = ref<ArchiveListItem[]>([])
+  const historyLoading = ref(false)
   // 更新对话框：发现新版本时弹出，包含版本号、更新日志、下载安装进度
   const updateVisible = ref(false)
   // Update 对象继承 Tauri Resource（含私有字段），必须用 shallowRef 避免 Vue 深度 Proxy 代理
@@ -230,6 +251,58 @@ const updateInfo = shallowRef<Update | null>(null)
   function selectLargeDir(path: string) {
     treeNodes.value.forEach(n => { n.is_selected = false })
     manualSourcePath.value = path
+  }
+
+  // 加载迁移历史档案列表
+  async function loadMigrationHistory() {
+    historyLoading.value = true
+    try {
+      migrationHistory.value = await invoke<ArchiveListItem[]>('list_migration_history')
+    } catch (e) {
+      addLog('error', `加载迁移历史失败: ${e}`, 'log.historyLoadFailed', { error: translateError(e) })
+    } finally {
+      historyLoading.value = false
+    }
+  }
+
+  // 从档案恢复（将数据搬回 C 盘原位置 + 重建源目录）
+  // 恢复进度通过现有 migration-progress 事件推送，主界面进度条自动更新
+  async function restoreFromArchive(archiveId: string) {
+    try {
+      migrationStatus.value = 'Copying'
+      addLog('info', '开始从档案恢复...', 'log.restoreStart')
+      await invoke('restore_from_archive', { archiveId })
+      addLog('info', '恢复完成', 'log.restoreDone')
+      // 恢复完成后刷新历史列表（恢复会清理档案，列表会减少一项）
+      await loadMigrationHistory()
+      refreshDiskInfo()
+    } catch (e) {
+      addLog('error', `恢复失败: ${e}`, 'log.restoreFailed', { error: translateError(e) })
+    } finally {
+      migrationStatus.value = 'Idle'
+    }
+  }
+
+  // 修复档案元文件（用户误删目标目录的 .cdisklinker_meta.json 时从全局索引重建）
+  async function rebuildArchiveMeta(archiveId: string) {
+    try {
+      await invoke('rebuild_archive_meta', { archiveId })
+      addLog('info', '档案修复完成', 'log.rebuildDone')
+      await loadMigrationHistory()
+    } catch (e) {
+      addLog('error', `档案修复失败: ${e}`, 'log.rebuildFailed', { error: translateError(e) })
+    }
+  }
+
+  // 重建链接（用户误删了 Junction 但目标数据还在时，重建源位置的 Junction）
+  async function rebuildJunction(archiveId: string) {
+    try {
+      await invoke('rebuild_junction', { archiveId })
+      addLog('info', '链接重建完成', 'log.rebuildJunctionDone')
+      await loadMigrationHistory()
+    } catch (e) {
+      addLog('error', `链接重建失败: ${e}`, 'log.rebuildJunctionFailed', { error: translateError(e) })
+    }
   }
 
   function toggleNodeExpand(nodeId: number) {
@@ -430,17 +503,19 @@ const updateInfo = shallowRef<Update | null>(null)
   async function confirmJournalComplete() {
     try {
       migrationStatus.value = 'Copying'
-      const msg = await invoke<string>('confirm_journal_complete')
+      const result = await invoke<DeleteResult>('confirm_journal_complete')
       migrationStatus.value = 'Idle'
       crashRecoveryMsg.value = ''
       crashRecoveryStage.value = ''
-      // msg 为 log.oldSourceFullyDone 或 log.oldSourceDeletedWithResidue
-      const isWarning = msg === 'log.oldSourceDeletedWithResidue'
-      addLog(
-        isWarning ? 'warn' : 'success',
-        translateResult(msg),
-        /^(err|log)\./.test(msg) ? msg : undefined,
-      )
+      if (result.fully_deleted) {
+        addLog('success', '旧源目录已删除，迁移完全完成！', 'log.oldSourceFullyDone')
+      } else {
+        addLog('warn', `迁移已完成，但部分旧源文件删除失败（共 ${result.failed_files.length} 个），请手动清理残留`, 'log.oldSourceDeletedWithResidue')
+        // 逐条显示失败文件
+        for (const f of result.failed_files) {
+          addLog('warn', f)
+        }
+      }
       refreshDiskInfo()
     } catch (e) {
       migrationStatus.value = 'Idle'
@@ -458,7 +533,10 @@ const updateInfo = shallowRef<Update | null>(null)
       if (result.fully_deleted) {
         addLog('success', '旧源目录已删除，迁移完全完成！', 'log.oldSourceFullyDone')
       } else {
-        addLog('warn', '迁移已完成，但部分旧源文件删除失败，请手动清理残留', 'log.oldSourceDeletedWithResidue', { files: result.failed_files })
+        addLog('warn', `迁移已完成，但部分旧源文件删除失败（共 ${result.failed_files.length} 个），请手动清理残留`, 'log.oldSourceDeletedWithResidue')
+        for (const f of result.failed_files) {
+          addLog('warn', f)
+        }
       }
       refreshDiskInfo()
     } catch (e) {
@@ -477,7 +555,10 @@ const updateInfo = shallowRef<Update | null>(null)
       if (result.fully_deleted) {
         addLog('success', '迁移已回滚，目录已恢复原状', 'log.instantRollbackDone')
       } else {
-        addLog('warn', '迁移已回滚，目录已恢复原状，但部分目标文件删除失败，请手动清理残留', 'log.instantRollbackDoneWithResidue', { files: result.failed_files })
+        addLog('warn', `迁移已回滚，目录已恢复原状，但部分目标文件删除失败（共 ${result.failed_files.length} 个），请手动清理残留`, 'log.instantRollbackDoneWithResidue')
+        for (const f of result.failed_files) {
+          addLog('warn', f)
+        }
       }
       refreshDiskInfo()
     } catch (e) {
@@ -775,11 +856,13 @@ const updateInfo = shallowRef<Update | null>(null)
     helpVisible, updateVisible, updateInfo, updateChecking,
     updateDownloading, updateProgress, updateProgressText, updateErrorMsg,
     largeDirs, largeDirsScanning,
+    migrationHistory, historyLoading,
     selectedNodes, selectedSafeNodes, selectedWarningNodes,
     totalSelectedSize, canMigrate,
     formatSize,
     checkAdmin, elevateSelf, refreshDiskInfo, scanDisk,
     scanLargeDirs, selectLargeDir,
+    loadMigrationHistory, restoreFromArchive, rebuildArchiveMeta, rebuildJunction,
     toggleNodeExpand, toggleNodeSelect,
     startMigration, doMigration, checkCrashRecovery, rollbackJournal, confirmJournalComplete,
     killLockingProcessesAndContinue, cancelMigrationDueToLocks,

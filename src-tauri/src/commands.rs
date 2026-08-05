@@ -6,6 +6,7 @@ use tauri::{AppHandle, Emitter};
 use crate::scanner::{self, DirectoryRating, ScanEntry};
 use crate::engine::{self, MigrationProgress, DeleteResult};
 use crate::win_util;
+use crate::migration_history;
 
 // === 数据模型 ===
 
@@ -24,6 +25,10 @@ pub struct TreeNode {
     pub is_junction: bool,
     pub is_visible: bool,
     pub children_count: i32,
+    /// 是否为本软件迁移过的目录（Junction 且在迁移档案中）
+    /// 用于 UI 区别显示：本软件迁移的 Junction 显示绿色"已迁移"标签
+    #[serde(default)]
+    pub is_migrated_by_us: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -74,6 +79,7 @@ fn scan_entry_to_tree_node(entry: &ScanEntry, id: i32) -> TreeNode {
         is_junction: win_util::is_junction(&entry.path),
         is_visible: true,
         children_count: 0,
+        is_migrated_by_us: entry.is_migrated_by_us,
     }
 }
 
@@ -275,6 +281,7 @@ pub fn migrate_selected(
                 depth: 0,
                 expanded: false,
                 has_children: false,
+                is_migrated_by_us: false,
             };
 
             let (tx, rx) = std::sync::mpsc::channel::<MigrationProgress>();
@@ -409,7 +416,7 @@ pub async fn confirm_delete_source(app: AppHandle, path: String) -> Result<Delet
 /// 与 confirm_delete_source 的区别：从 journal 读取 source_path，无需前端传参。
 /// 适用于应用重启后 JournalBar 显示的 Linked 状态恢复场景。
 #[tauri::command]
-pub async fn confirm_journal_complete(app: AppHandle) -> Result<String, String> {
+pub async fn confirm_journal_complete(app: AppHandle) -> Result<DeleteResult, String> {
     let app_handle = app.clone();
     let _ = app_handle.emit("migration-progress", serde_json::json!({
         "stage": "Copying",
@@ -429,18 +436,13 @@ pub async fn confirm_journal_complete(app: AppHandle) -> Result<String, String> 
     }).await
         .map_err(|e| format!("删除任务执行失败: {}", e))??;
 
-    let msg = if result.fully_deleted {
-        "log.oldSourceFullyDone".to_string()
-    } else {
-        "log.oldSourceDeletedWithResidue".to_string()
-    };
     let _ = app_handle.emit("migration-progress", serde_json::json!({
         "stage": "Idle",
         "progress": 100.0,
         "detail": "迁移完成",
         "detail_key": "log.oldSourceDeleted",
     }));
-    Ok(msg)
+    Ok(result)
 }
 
 /// 即时回滚迁移（秒级，无需数据拷贝）
@@ -522,4 +524,80 @@ pub async fn scan_large_directories(
     });
 
     Ok(())
+}
+
+// === 迁移档案管理 ===
+
+/// 列出全部迁移档案（含目标目录自包含档案的存在性标记）
+///
+/// 返回 ArchiveListItem 列表，meta_file_exists=false 表示用户误删了自包含档案
+#[tauri::command]
+pub fn list_migration_history() -> Result<Vec<migration_history::ArchiveListItem>, String> {
+    migration_history::list_archives()
+}
+
+/// 从迁移档案恢复（将数据搬回 C 盘原位置 + 重建源目录）
+///
+/// 恢复前会校验档案完整性（自包含档案存在 + 自哈希匹配 + 与全局索引一致）。
+/// 恢复核心复用 engine::rollback_completed_migration，完成后自动清理档案。
+#[tauri::command]
+pub async fn restore_from_archive(app: AppHandle, archive_id: String) -> Result<(), String> {
+    // 1. 校验档案完整性
+    let archive = migration_history::verify_archive(&archive_id)
+        .map_err(|e| format!("档案校验失败：{}。如需从全局索引重建自包含档案，请先调用修复功能。", e))?;
+
+    let source_junction = PathBuf::from(&archive.source_path);
+    let real_target = PathBuf::from(&archive.target_path);
+
+    // 2. 通过事件推送进度
+    let app_handle = app.clone();
+    let _ = app_handle.emit("migration-progress", serde_json::json!({
+        "stage": "Restoring",
+        "progress": 0.0,
+        "detail": format!("正在从 {} 恢复到 {}...", archive.target_path, archive.source_path),
+        "detail_key": "log.restoringFromArchive",
+    }));
+
+    // 3. spawn_blocking 调用 rollback_completed_migration
+    let (tx, _rx) = std::sync::mpsc::channel::<MigrationProgress>();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        engine::rollback_completed_migration(&source_junction, &real_target, tx)
+    }).await
+        .map_err(|e| format!("恢复任务执行失败: {}", e))?;
+
+    match result {
+        Ok(()) => {
+            let _ = app_handle.emit("migration-progress", serde_json::json!({
+                "stage": "Idle",
+                "progress": 0.0,
+                "detail": "",
+            }));
+            Ok(())
+        }
+        Err(e) => {
+            let _ = app_handle.emit("migration-progress", serde_json::json!({
+                "stage": "Error",
+                "progress": 0.0,
+                "detail": &e,
+            }));
+            Err(e)
+        }
+    }
+}
+
+/// 重建目标目录的自包含档案（用户误删自包含档案时使用）
+///
+/// 从全局索引读取档案信息，重新写入目标目录的 .cdisklinker_meta.json
+#[tauri::command]
+pub fn rebuild_archive_meta(archive_id: String) -> Result<(), String> {
+    migration_history::rebuild_meta_from_index(&archive_id)
+}
+
+/// 重建源位置的 Junction（链接丢失恢复）
+///
+/// 适用场景：用户误删了 Junction，但目标目录数据还在，希望恢复链接。
+/// 前置条件：档案校验通过 + 目标目录存在 + 源路径不存在（不覆盖）
+#[tauri::command]
+pub fn rebuild_junction(archive_id: String) -> Result<(), String> {
+    migration_history::rebuild_junction(&archive_id)
 }

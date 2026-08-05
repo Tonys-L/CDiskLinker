@@ -40,10 +40,18 @@
         >
           {{ t('view.largeDirs') }}
         </button>
+        <button
+          class="switcher-btn"
+          :class="{ active: leftView === 'history' }"
+          @click="leftView = 'history'"
+        >
+          {{ t('view.history') }}
+        </button>
       </div>
       <div class="left-panel-content">
         <TreeView v-if="leftView === 'tree'" />
-        <LargeDirPanel v-else />
+        <LargeDirPanel v-else-if="leftView === 'largeDirs'" />
+        <MigrationHistoryPanel v-else-if="leftView === 'history'" />
       </div>
     </aside>
 
@@ -201,6 +209,7 @@ import { toggleLocale } from '../i18n'
 import DiskOverview from '../components/DiskOverview.vue'
 import TreeView from '../components/TreeView.vue'
 import LargeDirPanel from '../components/LargeDirPanel.vue'
+import MigrationHistoryPanel from '../components/MigrationHistoryPanel.vue'
 import JournalBar from '../components/JournalBar.vue'
 import LogConsole from '../components/LogConsole.vue'
 import WarningDialog from '../components/WarningDialog.vue'
@@ -208,8 +217,8 @@ import WarningDialog from '../components/WarningDialog.vue'
 const { t, locale } = useI18n()
 const store = useAppStore()
 const targetInfo = ref<{ total: string; free: string } | null>(null)
-// 左侧面板视图切换：目录树 / 大目录排行榜
-const leftView = ref<'tree' | 'largeDirs'>('tree')
+// 左侧面板视图切换：目录树 / 大目录排行榜 / 迁移历史
+const leftView = ref<'tree' | 'largeDirs' | 'history'>('tree')
 
 const canMigrate = computed(() => {
   const hasSource = store.selectedNodes.length > 0 || store.manualSourcePath.trim().length > 0

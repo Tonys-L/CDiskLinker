@@ -11,6 +11,7 @@ use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 use crate::scanner::ScanEntry;
 use crate::journal::{self, PendingJob, MigrationStage};
 use crate::win_util;
+use crate::migration_history::{self, MigrationArchive};
 
 /// 结构化迁移进度事件
 #[derive(Debug, Clone, Serialize)]
@@ -2064,10 +2065,39 @@ pub fn confirm_delete_source(source_path: &Path) -> Result<DeleteResult, String>
     job.stage = MigrationStage::Completed;
     journal::write_job(&job)?;
 
+    // 在清理日志和 Manifest 前，先读取 Manifest 的 self_hash/total_files/total_size
+    // 用于构造迁移档案（best_effort，读取失败则档案降级为空哈希）
+    let (manifest_self_hash, total_files, total_size) = job.manifest_path
+        .as_ref()
+        .and_then(|mp| Manifest::load_from_file(mp).ok())
+        .map(|m| (m.self_hash, m.total_files, m.total_size))
+        .unwrap_or((String::new(), 0, 0));
+
     // 清理日志和 Manifest
     let _ = journal::clear_job();
     if let Some(mp) = &job.manifest_path {
         let _ = fs::remove_file(mp);
+    }
+
+    // best_effort 写入迁移档案（失败不阻止迁移完成，仅影响"软件内恢复"功能）
+    // 参考 lessons 1.4 best_effort 策略
+    let archive = MigrationArchive {
+        version: 1,
+        archive_id: job.job_id.clone(),
+        source_path: job.source_path.to_string_lossy().to_string(),
+        target_path: job.final_target_path.to_string_lossy().to_string(),
+        created_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        manifest_self_hash,
+        total_files,
+        total_size,
+        software_version: env!("CARGO_PKG_VERSION").to_string(),
+        archive_self_hash: String::new(),
+    };
+    if let Err(e) = migration_history::write_archive(archive) {
+        eprintln!("[warn] 写入迁移档案失败（不影响迁移完成）: {}", e);
     }
 
     Ok(result)
@@ -2263,6 +2293,14 @@ pub fn rollback_completed_migration(
     let _ = tx.send(MigrationProgress::new_keyed("Done", 100.0,
         "撤销回滚已成功完成！文件数据已完全还原至 C 盘原位置。",
         "log.rbDone", serde_json::json!({})));
+
+    // best_effort 清理迁移档案（失败不影响回滚完成）
+    if let Some(archive) = migration_history::find_by_source_path(source_junction) {
+        if let Err(e) = migration_history::remove_archive(&archive.archive_id) {
+            eprintln!("[warn] 清理迁移档案失败（不影响回滚完成）: {}", e);
+        }
+    }
+
     Ok(())
 }
 
@@ -2762,6 +2800,13 @@ mod tests {
         let _ = fs::remove_dir_all(&test_root);
         fs::create_dir_all(&test_root).unwrap();
 
+        // 注入测试用全局索引目录，避免污染真实 journal 目录
+        let test_history_dir = std::env::temp_dir()
+            .join("cdisklinker_e2e_history")
+            .join(format!("e2e_{}", rand_simple()));
+        fs::create_dir_all(&test_history_dir).unwrap();
+        crate::migration_history::set_test_history_dir(Some(test_history_dir.clone()));
+
         // 模拟源目录（必须在 C 盘以触发跨盘逻辑）
         // 注意：如果 temp_dir 不在 C 盘，此测试会因"同盘"校验失败
         let source_dir = std::env::temp_dir().join(format!("cdisklinker_e2e_src_{}", rand_simple()));
@@ -2784,6 +2829,7 @@ mod tests {
             depth: 0,
             expanded: false,
             has_children: false,
+            is_migrated_by_us: false,
         };
 
         let (tx, _rx) = mpsc::channel::<MigrationProgress>();
@@ -2796,16 +2842,20 @@ mod tests {
             let err = result.unwrap_err();
             if err.contains("不是 NTFS") || err.contains("无法获取") || err.contains("空间不足") {
                 eprintln!("跳过：目标盘不可用（{}）", err);
+                crate::migration_history::set_test_history_dir(None);
                 let _ = fs::remove_dir_all(&source_dir);
                 let _ = fs::remove_dir_all(target_drive);
+                let _ = fs::remove_dir_all(&test_history_dir);
                 return;
             }
+            crate::migration_history::set_test_history_dir(None);
             panic!("execute_migration 失败: {}", err);
         }
 
         // 验证：源目录已被重命名为 _cdisklinker_old
-        let old_path = source_dir.with_extension("._cdisklinker_old");
-        assert!(old_path.exists(), "源目录应被重命名为 _cdisklinker_old");
+        // 注意：必须用 make_old_path 构造路径，with_extension 会产生双点路径
+        let old_path = make_old_path(&source_dir);
+        assert!(old_path.exists(), "源目录应被重命名为 _cdisklinker_old: {:?}", old_path);
 
         // 验证：原位置已成为 Junction
         assert!(win_util::is_junction(&source_dir), "原位置应已创建 Junction");
@@ -2821,14 +2871,38 @@ mod tests {
         let final_target = std::path::Path::new(target_drive).join(source_dir.file_name().unwrap());
         assert!(final_target.exists(), "目标盘应有正式目录");
 
-        // 清理：删除 Junction + 删 _old + 删 final + 删 journal
+        // ===== 新增：验证 confirm_delete_source 后档案被写入 =====
+        // confirm_delete_source 会从 Linked 状态推进到 Completed，并 best_effort 写入迁移档案
+        let delete_result = confirm_delete_source(&source_dir);
+        assert!(delete_result.is_ok(), "confirm_delete_source 应成功: {:?}", delete_result.err());
+
+        // 验证：目标目录存在 .cdisklinker_meta.json
+        assert!(
+            crate::migration_history::meta_file_exists(&final_target),
+            "目标目录应存在迁移档案文件"
+        );
+
+        // 验证：全局索引包含该档案
+        let items = crate::migration_history::list_archives().unwrap();
+        let found = items.iter().find(|i| i.archive.target_path == final_target.to_string_lossy());
+        assert!(found.is_some(), "全局索引应包含刚写入的档案");
+        assert!(found.unwrap().meta_file_exists, "meta_file_exists 应为 true");
+
+        // 清理：删除 Junction + 删 _old（已在 confirm_delete_source 中删除）+ 删 final + 删 journal + 删档案
         let _ = win_util::delete_junction(&source_dir);
+        // _old 已在 confirm_delete_source 中删除，这里仅兜底
         let _ = fs::remove_dir_all(&old_path);
         let _ = fs::remove_dir_all(&final_target);
         let _ = crate::journal::clear_job();
+        // 清理全局索引中的档案
+        if let Some(archive) = crate::migration_history::find_by_source_path(&source_dir) {
+            let _ = crate::migration_history::remove_archive(&archive.archive_id);
+        }
+        crate::migration_history::set_test_history_dir(None);
 
         let _ = fs::remove_dir_all(&source_dir);
         let _ = fs::remove_dir_all(target_drive);
+        let _ = fs::remove_dir_all(&test_history_dir);
     }
 
     // ===== T1: remove_dir_all_best_effort 遇到被占用文件跳过继续删除其他文件 =====

@@ -51,6 +51,7 @@
 ## 支撑能力
 
 - **事务日志管理**：通过 `src/journal.rs` 对 `pending_jobs.json` 的读写，作为断电恢复和回滚的数据支撑。
+- **迁移档案管理**：通过 `src/migration_history.rs` 维护已迁移目录的"迁移档案"，让软件能识别自己迁移过的目录，并提供软件内一键恢复入口。双副本设计：目标目录写入自包含指纹文件 `.cdisklinker_meta.json`（隐藏属性，跟随数据走），软件运行目录维护全局索引 `migration_history.json`（快速查询）。档案写入采用 best_effort 策略，失败不阻止迁移完成。
 
 ---
 
@@ -85,6 +86,8 @@
 | **硬链接文件迁移** | V1.0 仅支持 Junction 目录联接（跨盘文件夹） | V1.5 支持跨盘文件单体硬链接（Hard Link） | 在 `win_util` 模块增加 `create_hard_link` 接口，并引入文件级别的路由判断。 |
 | **文件扩展名过滤** | 对整个文件夹下的内容全部物理移动 | V1.5 允许用户过滤特定扩展名（如只把视频迁移走，保留配置） | 在 `scanner` 及 `engine` 中追加 `ExtensionFilter` 策略规则。 |
 | **智慧推荐迁移算法** | 仅按文件大小和警告级别分级展示 | V2.0 基于历史数据与算法，智能评估“非系统依赖的大文件”推荐级别 | 重构 `scanner`，新增评估接口并支持插入推荐算法实现。 |
+| **迁移档案全局索引自动重建** | 全局索引 `migration_history.json` 丢失时无自动恢复 | V2.0 启动时扫描所有盘符的 `.cdisklinker_meta.json` 重建全局索引 | 在 `migration_history` 模块新增 `rebuild_index_from_meta_files` 函数，启动时调用。 |
+| **迁移档案加密与签名** | 档案仅用 SHA256 自哈希防篡改 | V2.0 增加非对称签名，防止伪造档案 | 在 `MigrationArchive` 结构体增加 `signature` 字段，引入签名/验签机制。 |
 
 ---
 
@@ -94,3 +97,4 @@
 |------|----------|--------|----------|
 | 2026-07-21 | 初始版本，确立智能扫描、安全迁移、独占解除三大能力边界 | Antigravity | — |
 | 2026-07-26 | 双阶段安全迁移补充默认模式与快速模式的校验方式说明 | Antigravity | #TASK-sha256-opt 同步更新 flows.md、lessons/migration.md |
+| 2026-08-04 | 新增"迁移档案管理"支撑能力；扩展点新增档案全局索引自动重建、档案加密与签名 | Antigravity | #TASK-migration-archive 同步更新 flows.md、glossary.md |

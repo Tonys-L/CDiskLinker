@@ -3,6 +3,7 @@ mod journal;
 mod scanner;
 pub mod win_util;
 mod commands;
+mod migration_history;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -42,6 +43,10 @@ pub fn run() {
             commands::confirm_journal_complete,
             commands::rollback_migration_instant,
             commands::scan_large_directories,
+            commands::list_migration_history,
+            commands::restore_from_archive,
+            commands::rebuild_archive_meta,
+            commands::rebuild_junction,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
