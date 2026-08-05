@@ -32,9 +32,9 @@
           <span class="update-label">{{ t('update.version') }}:</span>
           <span class="update-version">v{{ store.updateInfo.version }}</span>
         </div>
-        <div v-if="store.updateInfo.body" class="update-notes-block">
+        <div v-if="displayNotes" class="update-notes-block">
           <div class="update-label">{{ t('update.notes') }}:</div>
-          <div class="update-notes-content">{{ store.updateInfo.body }}</div>
+          <div class="update-notes-content">{{ displayNotes }}</div>
         </div>
       </div>
 
@@ -88,11 +88,23 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '../stores/app'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const store = useAppStore()
+
+// 解析 release notes 双语段落：约定 CI 以 "\n---\n" 分隔中文与英文
+// 根据当前 locale 选择对应语言段落；若无分隔符则整体显示
+const displayNotes = computed(() => {
+  const raw = store.updateInfo?.body || ''
+  if (!raw) return ''
+  const parts = raw.split(/\r?\n---\r?\n/)
+  if (parts.length === 1) return raw.trim()
+  // parts[0] = 中文, parts[1] = 英文
+  return (locale.value === 'zh-CN' ? parts[0] : parts[1] || parts[0]).trim()
+})
 </script>
 
 <style scoped>

@@ -26,13 +26,19 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      # 从 tag 指向 commit 的 message 提取 release notes（首行 + body）
-      # 作为 GitHub Release body，进而写入 latest.json 的 notes 字段供客户端显示
+      # 从 tag 指向 commit 的 message 提取 release notes（仅 body 部分，不含首行标题）
+      # 约定 commit message 格式：
+      #   首行：标题
+      #   空行
+      #   中文说明
+      #   ---
+      #   英文说明
+      # 作为 GitHub Release body，进而写入 latest.json 的 notes 字段供客户端按 locale 解析显示
       - name: Extract release notes from commit
         id: release_notes
         shell: bash
         run: |
-          MSG=$(git log -1 --pretty=%B ${{ github.sha }})
+          MSG=$(git log -1 --pretty=%b ${{ github.sha }})
           echo "body<<EOF" >> $GITHUB_OUTPUT
           echo "$MSG" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
