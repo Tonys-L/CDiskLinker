@@ -147,6 +147,69 @@
 
 ---
 
+## 发版约定（Release Convention）
+
+> ⚠️ **任何 agent 执行发版操作前必须阅读本章节**。本约定适用于所有 AI 工具（不限于 TRAE），跨 agent / 跨电脑 / 跨工具均需遵守。
+
+### commit message 双语格式（强制）
+
+发版提交的 commit message 必须使用双语格式。CI 会提取 commit body 作为 GitHub Release body，进而写入 `latest.json` 的 `notes` 字段；客户端 `UpdateDialog.vue` 按 `---` 分隔符解析中英文，按当前 locale 显示对应语言。
+
+**格式**：
+
+```
+<type>: <中文标题> (v<版本号>)
+
+<中文说明>
+---
+<英文说明>
+```
+
+**规则**：
+
+- 首行：标题，包含 type（feat/fix/docs/...）+ 中文摘要 + 版本号
+- 标题后空一行
+- 中文说明段落
+- 仅含 `---` 的行（前后各空一行）
+- 英文说明段落
+- CI 使用 `git log -1 --pretty=%b` 提取 body（不含首行标题）作为 Release body
+
+**示例**：
+
+```
+feat: 帮助页加版本号与链接 (v1.5.2)
+
+修正官网地址；GitHub 链接改用 SVG 图标；release notes 支持中英文。
+---
+Fix official website URL; use GitHub SVG icon; release notes support i18n.
+```
+
+### 发版流程检查点
+
+每次发版必须：
+
+1. 升版本号（`src-tauri/tauri.conf.json` + `src-tauri/Cargo.toml`）
+2. 用双语格式提交 commit message（见上）
+3. 创建 tag `v<版本号>`
+4. 推送 master 分支 + tag 触发 CI
+5. 验证 CI 构建成功
+6. 检查 GitHub Release 页：body 应包含以 `---` 分隔的双语内容
+
+### 客户端解析逻辑
+
+`UpdateDialog.vue` 的 `displayNotes` computed：
+
+- 用正则 `/\r?\n---\r?\n/` 拆分 `store.updateInfo.body`
+- locale=zh-CN → 取 parts[0]（中文）
+- locale=en-US → 取 parts[1]（英文），缺失时回退到 parts[0]
+- 无 `---` 分隔符 → 整体显示（向后兼容旧版本）
+
+### CI 实现
+
+见 `.github/workflows/release.yml` 的 `Extract release notes from commit` 步骤。
+
+---
+
 ## 变更记录
 
 | 日期 | 变更内容 | 变更人 | 关联变更 |
@@ -156,3 +219,4 @@
 | 2026-07-25 | V2 迁移流程：更新 INV-001（Junction 前数据须在 final 位置）、INV-004（源重命名后 final 为唯一权威副本）；新增 INV-007（源须重命名非删除）、INV-008（_old 须用户确认后方可删）；技术栈更新为 Vue 3 + Naive UI + Tauri 2.x | Antigravity | #TASK-v2-migration-flow 同步更新 flows.md |
 | 2026-08-02 | 测试约束补充：核心层重点测试项增加流式哈希拷贝（含 Junction 不跟入）、Manifest 生成/校验、Manifest 持久化与 self_hash 篡改检测 | Antigravity | #TASK-engine-tests |
 | 2026-08-04 | 新增 INV-009（迁移档案双副本写入顺序约束） | Antigravity | #TASK-migration-archive 同步更新 boundaries.md、flows.md、glossary.md |
+| 2026-08-05 | 新增"发版约定"章节：commit message 双语格式、发版流程检查点、客户端解析逻辑、CI 实现引用 | Antigravity | #TASK-release-convention |
